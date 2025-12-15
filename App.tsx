@@ -4,18 +4,29 @@ import SetupScreen from './components/SetupScreen';
 import LiveCall from './components/LiveCall';
 import FeedbackReport from './components/FeedbackReport';
 import ChatWidget from './components/ChatWidget';
-import { SimulationConfig, EvaluationResult } from './types';
+import { SimulationConfig, EvaluationResult, ExternalCriterion } from './types';
 import { geminiService } from './services/geminiService';
 
 type AppState = 'SETUP' | 'CALL' | 'GENERATING_REPORT' | 'REPORT';
 
-// Exporting as a named component for better modularity
-export const CallCenterTrainer: React.FC = () => {
+export interface CallCenterTrainerProps {
+  initialAgentName?: string;
+  externalCriteria?: ExternalCriterion[];
+  externalClientName?: string;
+  externalScenario?: string;
+}
+
+export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
+  initialAgentName = '',
+  externalCriteria,
+  externalClientName,
+  externalScenario
+}) => {
   const [appState, setAppState] = useState<AppState>('SETUP');
   const [config, setConfig] = useState<SimulationConfig | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
   
-  // Persist the workbook across sessions
+  // Persist the workbook across sessions (only used if no external criteria provided)
   const [cachedWorkbook, setCachedWorkbook] = useState<XLSX.WorkBook | null>(null);
 
   const handleStart = (newConfig: SimulationConfig) => {
@@ -49,11 +60,18 @@ export const CallCenterTrainer: React.FC = () => {
     setResult(null);
   };
 
+  const handleSaveCorrection = (correctedResult: EvaluationResult) => {
+    if (result) {
+        // Send both the original AI result and the human corrected one
+        geminiService.submitCorrection(result, correctedResult);
+        // Update local state so UI reflects "saved"
+        setResult(correctedResult);
+    }
+  };
+
   return (
-    // Changed min-h-screen to h-full to fit in parent containers
-    // Added relative positioning to contain absolute children if needed
     <div className="w-full min-h-screen bg-[#0f172a] text-slate-100 font-sans selection:bg-blue-500/30 flex flex-col relative">
-      {/* Header - Changed from fixed to sticky so it stays within the module layout */}
+      {/* Header */}
       <header className="sticky top-0 w-full z-10 border-b border-slate-800 bg-[#0f172a]/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -70,13 +88,17 @@ export const CallCenterTrainer: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content - Removed pt-24 as header is no longer fixed overlay */}
+      {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-6 py-8">
         {appState === 'SETUP' && (
           <SetupScreen 
             onStart={handleStart} 
             workbook={cachedWorkbook}
             onWorkbookUpload={setCachedWorkbook}
+            initialAgentName={initialAgentName}
+            externalCriteria={externalCriteria}
+            externalClientName={externalClientName}
+            externalScenario={externalScenario}
           />
         )}
         
@@ -98,7 +120,11 @@ export const CallCenterTrainer: React.FC = () => {
         )}
 
         {appState === 'REPORT' && result && (
-          <FeedbackReport result={result} onRestart={handleRestart} />
+          <FeedbackReport 
+            result={result} 
+            onRestart={handleRestart} 
+            onSaveCorrection={handleSaveCorrection}
+          />
         )}
       </main>
       
@@ -108,6 +134,4 @@ export const CallCenterTrainer: React.FC = () => {
   );
 };
 
-// Default export for backward compatibility if needed, 
-// but named export is preferred for modules.
 export default CallCenterTrainer;

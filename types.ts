@@ -19,6 +19,13 @@ export enum Difficulty {
   HARD = 'Hard (Frustrated/Busy Customer)'
 }
 
+export interface ExternalCriterion {
+  id?: string | number;
+  name: string;
+  maxPoints: number;
+  description?: string;
+}
+
 export interface SimulationConfig {
   agentName: string;
   scenario: string;

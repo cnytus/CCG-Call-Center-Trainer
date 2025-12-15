@@ -62,3 +62,41 @@ export async function decodeAudioData(
 
   return buffer;
 }
+
+/**
+ * Converts a File object to a Base64 string.
+ */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Remove data url prefix (e.g. "data:audio/mp3;base64,")
+      const base64 = result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = error => reject(error);
+  });
+}
+
+/**
+ * Fetches an audio file from a URL/Path and converts it to Base64.
+ */
+export async function fetchAudioAsBase64(url: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch audio file: ${url}`);
+  }
+  const blob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+  });
+}

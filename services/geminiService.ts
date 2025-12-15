@@ -1,10 +1,18 @@
 import { GoogleGenAI, LiveServerMessage, Modality, Type, GenerateContentResponse } from "@google/genai";
-import { SimulationConfig, EvaluationResult } from "../types";
-import { createAudioBlob, decodeAudioData } from "../utils/audioUtils";
+import { SimulationConfig, EvaluationResult, CriterionEvaluation } from "../types";
+import { createAudioBlob, decodeAudioData, fileToBase64, fetchAudioAsBase64 } from "../utils/audioUtils";
 
 // Constants for Audio
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
+
+interface LearningExample {
+  criterionName: string;
+  aiComment: string;
+  humanComment: string;
+  scoreDifference: number; // e.g., Human gave 8, AI gave 10 = -2
+  timestamp: number;
+}
 
 export class GeminiService {
   private ai: GoogleGenAI;
@@ -23,8 +31,63 @@ export class GeminiService {
   private currentInputTranscription = '';
   private currentOutputTranscription = '';
 
+  // Learning Memory
+  private learningHistory: LearningExample[] = [];
+
   constructor() {
     this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    this.loadLearningHistory();
+  }
+
+  private loadLearningHistory() {
+    try {
+      const stored = localStorage.getItem('ai_training_data');
+      if (stored) {
+        this.learningHistory = JSON.parse(stored);
+        console.log(`Loaded ${this.learningHistory.length} training examples.`);
+      }
+    } catch (e) {
+      console.error("Failed to load AI training data", e);
+    }
+  }
+
+  /**
+   * Accepts a corrected evaluation from the human QA manager.
+   * Compares the original AI result with the Human result and stores significant differences.
+   */
+  public submitCorrection(original: EvaluationResult, corrected: EvaluationResult) {
+    if (!original.criteriaBreakdown || !corrected.criteriaBreakdown) return;
+
+    let learnedSomething = false;
+
+    corrected.criteriaBreakdown.forEach((humanItem) => {
+      const aiItem = original.criteriaBreakdown.find(i => i.name === humanItem.name);
+      if (!aiItem) return;
+
+      // If score changed or comment changed significantly, record it
+      if (aiItem.score !== humanItem.score || aiItem.comment !== humanItem.comment) {
+        const example: LearningExample = {
+          criterionName: humanItem.name,
+          aiComment: aiItem.comment,
+          humanComment: humanItem.comment,
+          scoreDifference: humanItem.score - aiItem.score,
+          timestamp: Date.now()
+        };
+        
+        // Keep history manageable (last 50 corrections)
+        this.learningHistory.unshift(example);
+        learnedSomething = true;
+      }
+    });
+
+    if (this.learningHistory.length > 50) {
+      this.learningHistory = this.learningHistory.slice(0, 50);
+    }
+
+    if (learnedSomething) {
+      localStorage.setItem('ai_training_data', JSON.stringify(this.learningHistory));
+      console.log("AI has learned from corrections. Total examples:", this.learningHistory.length);
+    }
   }
 
   /**
@@ -65,6 +128,108 @@ export class GeminiService {
       
       Start the conversation immediately as if the call just connected.
     `;
+  }
+
+  /**
+   * Analyzes reference audio files (File objects) to extract customer persona.
+   */
+  async analyzeReferenceCalls(files: File[]): Promise<string> {
+    const parts = [];
+    parts.push(this.getAnalysisPromptPart());
+
+    for (const file of files) {
+      const base64 = await fileToBase64(file);
+      parts.push({
+        inlineData: { mimeType: file.type || 'audio/mp3', data: base64 }
+      });
+    }
+
+    return this.executeAnalysis(parts);
+  }
+
+  /**
+   * Analyzes reference audio from URLs (for pre-loaded presets).
+   */
+  async analyzePersonaFromUrls(urls: string[]): Promise<string> {
+    const parts = [];
+    parts.push(this.getAnalysisPromptPart());
+
+    for (const url of urls) {
+        try {
+            const base64 = await fetchAudioAsBase64(url);
+            // Guess mime type based on extension, default to mp3
+            const mimeType = url.endsWith('.wav') ? 'audio/wav' : 'audio/mp3';
+            parts.push({
+                inlineData: { mimeType, data: base64 }
+            });
+        } catch (e) {
+            console.error(`Skipping file ${url}:`, e);
+            // Continue with other files if one fails
+        }
+    }
+
+    if (parts.length <= 1) {
+        throw new Error("No valid audio files could be loaded for analysis.");
+    }
+
+    return this.executeAnalysis(parts);
+  }
+
+  /**
+   * Analyzes text transcripts to extract customer persona.
+   */
+  async analyzePersonaFromText(transcript: string): Promise<string> {
+    const prompt = `
+      You are an expert Call Center Analyst.
+      Below are transcripts of REAL customer calls for DPD Inbound.
+
+      Your task is to extract a "Simulation Profile" so an actor can replicate this customer's behavior.
+
+      Please Identify:
+      1. Common Issues (e.g. Express pickup failures, label printing issues, missed pickups).
+      2. The Customer Persona (Tone, vocabulary, patience level, typical phrasing).
+      3. Key Phrases or specific terminology used (e.g., "Verteilerdepot", "Abholauftrag", "Datenabgleich").
+
+      Combine these into a concise summary titled "LEARNED PATTERNS FROM REAL CALLS".
+
+      TRANSCRIPTS:
+      ${transcript}
+    `;
+
+     const response = await this.ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+      return response.text || "Could not analyze transcripts.";
+  }
+
+  private getAnalysisPromptPart() {
+      return {
+          text: `You are an expert Call Center Analyst. 
+          Please listen to these audio recordings of real customer calls.
+          
+          Your task is to extract a "Simulation Profile" so an actor can replicate this customer's behavior.
+          
+          Please Identify:
+          1. The specific technical/logistical issue discussed (e.g. "Parcel stuck at depot").
+          2. The Customer Persona (Tone, vocabulary, patience level, speed of speech).
+          3. Key Phrases or specific terminology the customer used.
+          
+          Combine these into a concise summary titled "LEARNED PATTERNS FROM REAL AUDIO".`
+      };
+  }
+
+  private async executeAnalysis(parts: any[]): Promise<string> {
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: { parts: parts },
+      });
+      return response.text || "Could not analyze audio.";
+    } catch (e) {
+      console.error("Audio analysis failed", e);
+      throw new Error("Failed to analyze reference audio files.");
+    }
   }
 
   /**
@@ -265,6 +430,22 @@ export class GeminiService {
       .map(t => `${t.role.toUpperCase()}: ${t.text}`)
       .join('\n');
 
+    // Format Learning History for the prompt
+    let learningContext = "";
+    if (this.learningHistory.length > 0) {
+        const examples = this.learningHistory.map(ex => 
+            `- When evaluating "${ex.criterionName}", a human corrected me previously. \n  My initial thought: "${ex.aiComment}"\n  The Correction: "${ex.humanComment}"\n  Score Adjustment: ${ex.scoreDifference > 0 ? '+' : ''}${ex.scoreDifference} points.`
+        ).join('\n');
+        
+        learningContext = `
+        IMPORTANT - LEARNING FROM HUMAN CORRECTIONS:
+        I have received feedback from a QA Manager on previous evaluations. Use this feedback to adjust your current evaluation logic:
+        ${examples}
+        
+        If you encounter similar situations in this transcript, apply the logic from the "Correction" above.
+        `;
+    }
+
     const prompt = `
       You are a Quality Assurance Specialist for a call center. 
       
@@ -273,6 +454,8 @@ export class GeminiService {
       - If no weights are specified, assume each criterion is worth 10 points.
       
       Step 2: Evaluate the "TRANSCRIPT" against each identified criterion.
+      
+      ${learningContext}
       
       Step 3: Output the results in JSON format.
       
