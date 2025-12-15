@@ -15,6 +15,10 @@ export class GeminiService {
   private sources = new Set<AudioBufferSourceNode>();
   private transcriptionHistory: Array<{ role: 'user' | 'model'; text: string }> = [];
   
+  // Persistent nodes to prevent Garbage Collection
+  private mediaStreamSource: MediaStreamAudioSourceNode | null = null;
+  private audioProcessor: ScriptProcessorNode | null = null;
+  
   // Temporary buffers for real-time transcription
   private currentInputTranscription = '';
   private currentOutputTranscription = '';
@@ -32,6 +36,7 @@ export class GeminiService {
       Do NOT act like an AI. Act exactly like a human customer.
       
       SCENARIO DETAILS:
+      - Agent Name: ${config.agentName} (You may wish to greet them or use their name if they introduce themselves).
       - Topic: ${config.scenario}
       - Client/Brand: ${config.clientName || 'General'}
       - Call Type: ${config.callType || 'General'}
@@ -78,12 +83,20 @@ export class GeminiService {
     this.inputAudioContext = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE });
     this.outputAudioContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
 
+    // Explicitly resume contexts to ensure they are active (browsers may suspend them)
+    if (this.inputAudioContext.state === 'suspended') {
+        await this.inputAudioContext.resume();
+    }
+    if (this.outputAudioContext.state === 'suspended') {
+        await this.outputAudioContext.resume();
+    }
+
     // Microphone Stream
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const source = this.inputAudioContext.createMediaStreamSource(stream);
     
-    // Processor for Input Audio (Sending to Gemini)
-    const processor = this.inputAudioContext.createScriptProcessor(4096, 1, 1);
+    // Store nodes in instance to prevent Garbage Collection
+    this.mediaStreamSource = this.inputAudioContext.createMediaStreamSource(stream);
+    this.audioProcessor = this.inputAudioContext.createScriptProcessor(4096, 1, 1);
     
     // Establish Live Session
     const sessionPromise = this.ai.live.connect({
@@ -92,7 +105,9 @@ export class GeminiService {
         onopen: () => {
           console.log("Gemini Live Session Opened");
           
-          processor.onaudioprocess = (e) => {
+          if (!this.audioProcessor || !this.mediaStreamSource || !this.inputAudioContext) return;
+
+          this.audioProcessor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
             
             const pcmBlob = createAudioBlob(inputData, INPUT_SAMPLE_RATE);
@@ -102,8 +117,8 @@ export class GeminiService {
             });
           };
 
-          source.connect(processor);
-          processor.connect(this.inputAudioContext!.destination);
+          this.mediaStreamSource.connect(this.audioProcessor);
+          this.audioProcessor.connect(this.inputAudioContext.destination);
         },
         onmessage: async (message: LiveServerMessage) => {
           await this.handleServerMessage(message, onAudioData);
@@ -205,28 +220,43 @@ export class GeminiService {
     }
     
     // Stop Microphone
-    this.inputAudioContext?.close();
-    this.inputAudioContext = null;
+    if (this.mediaStreamSource && this.audioProcessor) {
+        this.mediaStreamSource.disconnect();
+        this.audioProcessor.disconnect();
+    }
+    this.mediaStreamSource = null;
+    this.audioProcessor = null;
+
+    if (this.inputAudioContext) {
+        if (this.inputAudioContext.state !== 'closed') {
+            await this.inputAudioContext.close();
+        }
+        this.inputAudioContext = null;
+    }
 
     // Stop Playback
     this.sources.forEach(s => s.stop());
     this.sources.clear();
-    this.outputAudioContext?.close();
-    this.outputAudioContext = null;
+    
+    if (this.outputAudioContext) {
+        if (this.outputAudioContext.state !== 'closed') {
+            await this.outputAudioContext.close();
+        }
+        this.outputAudioContext = null;
+    }
   }
 
   /**
    * Generates a final evaluation report based on the transcript history.
    */
   async generateEvaluation(config: SimulationConfig): Promise<EvaluationResult> {
-    // If transcript is empty, return dummy data or error
+    // If transcript is empty, return dummy data
     if (this.transcriptionHistory.length === 0) {
-        // Fallback if session was too short
         return {
-            score: 0,
+            agentName: config.agentName,
+            totalScore: 0,
             summary: "Call was too short to evaluate.",
-            strengths: [],
-            weaknesses: ["No conversation detected."],
+            criteriaBreakdown: [],
             transcription: []
         };
     }
@@ -235,15 +265,21 @@ export class GeminiService {
       .map(t => `${t.role.toUpperCase()}: ${t.text}`)
       .join('\n');
 
-    // Include the raw Excel data in the evaluation prompt so it knows the criteria
     const prompt = `
       You are a Quality Assurance Specialist for a call center. 
-      Evaluate the following conversation transcript based on the data provided below.
+      
+      Step 1: Analyze the "CRITERIA DATA" below (which comes from an Excel/CSV file). Identify the list of distinct evaluation criteria.
+      - If the data includes points or weights (e.g., "Greeting - 10pts"), use those as the maxPoints.
+      - If no weights are specified, assume each criterion is worth 10 points.
+      
+      Step 2: Evaluate the "TRANSCRIPT" against each identified criterion.
+      
+      Step 3: Output the results in JSON format.
       
       SCENARIO: ${config.scenario}
       LANGUAGE: ${config.language}
       
-      CRITERIA & CONTEXT DATA FROM EXCEL:
+      CRITERIA DATA:
       ${config.evaluationCriteria}
 
       TRANSCRIPT:
@@ -251,10 +287,16 @@ export class GeminiService {
 
       Output valid JSON matching this schema:
       {
-        "score": number (0-100),
-        "summary": string (2-3 sentences),
-        "strengths": string[] (3 bullet points),
-        "weaknesses": string[] (3 bullet points)
+        "totalScore": number (0-100 overall percentage),
+        "summary": string (General summary of performance),
+        "criteriaBreakdown": [
+           { 
+             "name": string (Criterion Name), 
+             "score": number (Points earned),
+             "maxPoints": number (Total points possible for this item),
+             "comment": string (Short feedback)
+           }
+        ]
       }
     `;
 
@@ -266,12 +308,23 @@ export class GeminiService {
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            score: { type: Type.NUMBER },
+            totalScore: { type: Type.NUMBER },
             summary: { type: Type.STRING },
-            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+            criteriaBreakdown: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  score: { type: Type.NUMBER },
+                  maxPoints: { type: Type.NUMBER },
+                  comment: { type: Type.STRING }
+                },
+                required: ['name', 'score', 'maxPoints', 'comment']
+              }
+            }
           },
-          required: ['score', 'summary', 'strengths', 'weaknesses']
+          required: ['totalScore', 'summary', 'criteriaBreakdown']
         }
       }
     });
@@ -279,9 +332,35 @@ export class GeminiService {
     const json = JSON.parse(response.text || '{}');
     
     return {
+      agentName: config.agentName,
       ...json,
       transcription: this.transcriptionHistory
     };
+  }
+
+  /**
+   * Sends a text message to the chatbot.
+   */
+  async sendChatMessage(
+    model: string, 
+    history: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>, 
+    message: string
+  ): Promise<string> {
+    try {
+      const chat = this.ai.chats.create({
+        model: model,
+        history: history,
+        config: {
+            systemInstruction: "You are a helpful AI assistant for a call center agent training app. Keep your answers concise and helpful."
+        }
+      });
+      
+      const result = await chat.sendMessage({ message });
+      return result.text || "";
+    } catch (error) {
+      console.error("Chat error:", error);
+      return "Sorry, I encountered an error processing your request.";
+    }
   }
 }
 

@@ -20,7 +20,8 @@ export enum Difficulty {
 }
 
 export interface SimulationConfig {
-  scenario: string; // Changed from enum to string to support dynamic Excel tabs
+  agentName: string;
+  scenario: string;
   clientName?: string;
   callType?: string;
   language: Language;
@@ -29,10 +30,17 @@ export interface SimulationConfig {
   evaluationCriteria: string;
 }
 
-export interface EvaluationResult {
+export interface CriterionEvaluation {
+  name: string;
   score: number;
+  maxPoints: number;
+  comment: string;
+}
+
+export interface EvaluationResult {
+  agentName: string;
+  totalScore: number;
   summary: string;
-  strengths: string[];
-  weaknesses: string[];
+  criteriaBreakdown: CriterionEvaluation[];
   transcription: Array<{ role: 'user' | 'model'; text: string }>;
 }

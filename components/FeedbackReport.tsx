@@ -9,22 +9,26 @@ interface Props {
 
 const FeedbackReport: React.FC<Props> = ({ result, onRestart }) => {
   const chartData = [
-    { name: 'Score', value: result.score }
+    { name: 'Total Score', value: result.totalScore }
   ];
 
-  const getScoreColor = (score: number) => {
-    if (score >= 90) return '#4ade80'; // green-400
-    if (score >= 70) return '#facc15'; // yellow-400
+  const getScoreColor = (score: number, max: number = 100) => {
+    const percentage = (score / max) * 100;
+    if (percentage >= 90) return '#4ade80'; // green-400
+    if (percentage >= 70) return '#facc15'; // yellow-400
     return '#f87171'; // red-400
   };
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8 animate-fade-in">
-      <div className="flex justify-between items-center border-b border-slate-700 pb-6">
-        <h1 className="text-3xl font-bold text-white">Evaluation Report</h1>
+    <div className="max-w-5xl mx-auto p-6 space-y-8 animate-fade-in pb-20">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-700 pb-6 gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-white">Evaluation Report</h1>
+          <p className="text-slate-400 mt-1 text-lg">Agent: <span className="text-blue-400 font-semibold">{result.agentName}</span></p>
+        </div>
         <button 
           onClick={onRestart}
-          className="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-500 transition text-white font-medium"
+          className="px-6 py-3 bg-blue-600 rounded-lg hover:bg-blue-500 transition text-white font-medium shadow-md"
         >
           Start New Session
         </button>
@@ -41,13 +45,13 @@ const FeedbackReport: React.FC<Props> = ({ result, onRestart }) => {
                     <YAxis type="category" dataKey="name" hide />
                     <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#1e293b', border: 'none' }} />
                     <Bar dataKey="value" radius={[0, 20, 20, 0]} barSize={40}>
-                        <Cell fill={getScoreColor(result.score)} />
+                        <Cell fill={getScoreColor(result.totalScore)} />
                     </Bar>
                 </BarChart>
              </ResponsiveContainer>
              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                  <span className="text-5xl font-bold text-white" style={{ textShadow: '0 2px 10px rgba(0,0,0,0.5)' }}>
-                     {result.score}/100
+                     {result.totalScore}%
                  </span>
              </div>
           </div>
@@ -60,42 +64,54 @@ const FeedbackReport: React.FC<Props> = ({ result, onRestart }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Strengths */}
-        <div className="bg-slate-800/50 rounded-xl p-6 border border-green-900/30">
-          <h3 className="flex items-center text-green-400 font-bold mb-4 uppercase tracking-wider">
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            Strengths
-          </h3>
-          <ul className="space-y-2">
-            {result.strengths.map((s, i) => (
-              <li key={i} className="flex items-start text-slate-300">
-                <span className="mr-2 text-green-500">•</span>
-                {s}
-              </li>
-            ))}
-          </ul>
+      {/* Detailed Scorecard Table */}
+      <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg">
+        <div className="p-4 bg-slate-900 border-b border-slate-700 flex justify-between items-center">
+          <h3 className="text-slate-400 font-medium uppercase tracking-wider">Detailed Scorecard</h3>
+          <span className="text-xs text-slate-500">Based on uploaded criteria</span>
         </div>
-
-        {/* Weaknesses */}
-        <div className="bg-slate-800/50 rounded-xl p-6 border border-red-900/30">
-          <h3 className="flex items-center text-red-400 font-bold mb-4 uppercase tracking-wider">
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-            Areas for Improvement
-          </h3>
-          <ul className="space-y-2">
-            {result.weaknesses.map((w, i) => (
-              <li key={i} className="flex items-start text-slate-300">
-                <span className="mr-2 text-red-500">•</span>
-                {w}
-              </li>
-            ))}
-          </ul>
+        
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-900/50 text-slate-400 text-sm uppercase">
+                <th className="p-4 border-b border-slate-700 font-medium">Criterion</th>
+                <th className="p-4 border-b border-slate-700 font-medium text-center w-32">Points</th>
+                <th className="p-4 border-b border-slate-700 font-medium">Feedback</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-700">
+              {result.criteriaBreakdown?.map((item, idx) => (
+                <tr key={idx} className="hover:bg-slate-700/30 transition-colors">
+                  <td className="p-4 text-white font-medium">{item.name}</td>
+                  <td className="p-4 text-center">
+                    <div className="flex flex-col items-center">
+                      <span className={`text-lg font-bold ${
+                        (item.score / item.maxPoints) === 1 ? 'text-green-400' : 
+                        (item.score / item.maxPoints) >= 0.5 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {item.score}
+                      </span>
+                      <span className="text-xs text-slate-500">/ {item.maxPoints}</span>
+                    </div>
+                  </td>
+                  <td className="p-4 text-slate-300 text-sm">{item.comment}</td>
+                </tr>
+              ))}
+              {(!result.criteriaBreakdown || result.criteriaBreakdown.length === 0) && (
+                <tr>
+                   <td colSpan={3} className="p-6 text-center text-slate-500 italic">
+                     No specific criteria breakdown available.
+                   </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
       {/* Transcript Accordion */}
-      <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+      <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg">
         <div className="p-4 bg-slate-900 border-b border-slate-700">
           <h3 className="text-slate-400 font-medium uppercase tracking-wider">Conversation Transcript</h3>
         </div>
