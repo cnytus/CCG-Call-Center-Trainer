@@ -1,4 +1,4 @@
-import { GoogleGenAI, LiveServerMessage, Modality, Type, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, Type, GenerateContentResponse, Schema } from "@google/genai";
 import { SimulationConfig, EvaluationResult, CriterionEvaluation } from "../types";
 import { createAudioBlob, decodeAudioData, fileToBase64, fetchAudioAsBase64 } from "../utils/audioUtils";
 
@@ -379,6 +379,16 @@ export class GeminiService {
   }
 
   async disconnect() {
+    // Capture any pending transcripts before closing
+    if (this.currentInputTranscription.trim()) {
+        this.transcriptionHistory.push({ role: 'user', text: this.currentInputTranscription });
+        this.currentInputTranscription = '';
+    }
+    if (this.currentOutputTranscription.trim()) {
+        this.transcriptionHistory.push({ role: 'model', text: this.currentOutputTranscription });
+        this.currentOutputTranscription = '';
+    }
+
     if (this.session) {
       this.session.close();
       this.session = null;
@@ -415,19 +425,20 @@ export class GeminiService {
    * Generates a final evaluation report based on the transcript history.
    */
   async generateEvaluation(config: SimulationConfig): Promise<EvaluationResult> {
-    // If transcript is empty, return dummy data
+    // If transcript is empty, return dummy data to avoid errors, 
+    // but try to give feedback if at least some data exists.
     if (this.transcriptionHistory.length === 0) {
         return {
             agentName: config.agentName,
             totalScore: 0,
-            summary: "Call was too short to evaluate.",
+            summary: "Call was too short to evaluate. No audio transcription was recorded.",
             criteriaBreakdown: [],
             transcription: []
         };
     }
 
     const conversationText = this.transcriptionHistory
-      .map(t => `${t.role.toUpperCase()}: ${t.text}`)
+      .map(t => `${t.role === 'user' ? 'AGENT (User)' : 'CUSTOMER (AI)'}: ${t.text}`)
       .join('\n');
 
     // Format Learning History for the prompt
@@ -447,78 +458,89 @@ export class GeminiService {
     }
 
     const prompt = `
-      You are a Quality Assurance Specialist for a call center. 
+      TASK: You are an expert Quality Assurance Evaluator for a call center. 
+      Your job is to grade the following call transcript based *strictly* on the provided Evaluation Criteria.
+
+      INPUT DATA:
+      1. Scenario: ${config.scenario}
+      2. Agent Name: ${config.agentName}
+      3. Language: ${config.language}
       
-      Step 1: Analyze the "CRITERIA DATA" below (which comes from an Excel/CSV file). Identify the list of distinct evaluation criteria.
-      - If the data includes points or weights (e.g., "Greeting - 10pts"), use those as the maxPoints.
-      - If no weights are specified, assume each criterion is worth 10 points.
-      
-      Step 2: Evaluate the "TRANSCRIPT" against each identified criterion.
-      
-      ${learningContext}
-      
-      Step 3: Output the results in JSON format.
-      
-      SCENARIO: ${config.scenario}
-      LANGUAGE: ${config.language}
-      
-      CRITERIA DATA:
+      EVALUATION CRITERIA (Source Data):
       ${config.evaluationCriteria}
 
-      TRANSCRIPT:
+      TRANSCRIPT OF CALL:
       ${conversationText}
 
-      Output valid JSON matching this schema:
-      {
-        "totalScore": number (0-100 overall percentage),
-        "summary": string (General summary of performance),
-        "criteriaBreakdown": [
-           { 
-             "name": string (Criterion Name), 
-             "score": number (Points earned),
-             "maxPoints": number (Total points possible for this item),
-             "comment": string (Short feedback)
-           }
-        ]
-      }
+      ${learningContext}
+
+      INSTRUCTIONS:
+      1. Analyze the "EVALUATION CRITERIA". Identify every specific criterion mentioned.
+         - If the data has point values (e.g. "Greeting (10pts)" or column "Max Points"), use those as 'maxPoints'.
+         - If no points are listed, assume 10 points per item.
+      2. Evaluate the "TRANSCRIPT" against these criteria.
+      3. For EACH criterion, provide:
+         - A score (0 up to maxPoints).
+         - A specific, constructive comment explaining why points were given or deducted.
+      4. Calculate the "totalScore" as a normalized percentage (0-100).
+      5. Provide a "summary" of the agent's overall performance (strengths/weaknesses).
+
+      RETURN JSON ONLY matching the defined schema.
     `;
 
-    const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            totalScore: { type: Type.NUMBER },
-            summary: { type: Type.STRING },
-            criteriaBreakdown: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  score: { type: Type.NUMBER },
-                  maxPoints: { type: Type.NUMBER },
-                  comment: { type: Type.STRING }
-                },
-                required: ['name', 'score', 'maxPoints', 'comment']
-              }
-            }
-          },
-          required: ['totalScore', 'summary', 'criteriaBreakdown']
+    // Define the schema using the SDK's Schema definitions
+    const jsonSchema: Schema = {
+      type: Type.OBJECT,
+      properties: {
+        totalScore: { type: Type.NUMBER, description: "Overall percentage score (0-100)" },
+        summary: { type: Type.STRING, description: "Executive summary of the agent's performance" },
+        criteriaBreakdown: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING, description: "Name of the criterion (e.g., 'Greeting')" },
+              score: { type: Type.NUMBER, description: "Points earned for this criterion" },
+              maxPoints: { type: Type.NUMBER, description: "Maximum possible points for this criterion" },
+              comment: { type: Type.STRING, description: "Feedback explaining the score" }
+            },
+            required: ['name', 'score', 'maxPoints', 'comment']
+          }
         }
-      }
-    });
-
-    const json = JSON.parse(response.text || '{}');
-    
-    return {
-      agentName: config.agentName,
-      ...json,
-      transcription: this.transcriptionHistory
+      },
+      required: ['totalScore', 'summary', 'criteriaBreakdown']
     };
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: jsonSchema
+        }
+      });
+
+      const json = JSON.parse(response.text || '{}');
+      
+      return {
+        agentName: config.agentName,
+        totalScore: json.totalScore || 0,
+        summary: json.summary || "No summary provided.",
+        criteriaBreakdown: json.criteriaBreakdown || [],
+        transcription: this.transcriptionHistory
+      };
+    } catch (error) {
+      console.error("Evaluation Generation Error:", error);
+      // Fallback response in case of API failure
+      return {
+        agentName: config.agentName,
+        totalScore: 0,
+        summary: "Error generating evaluation. Please try again.",
+        criteriaBreakdown: [],
+        transcription: this.transcriptionHistory
+      };
+    }
   }
 
   /**
