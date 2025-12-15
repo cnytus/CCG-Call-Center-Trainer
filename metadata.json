@@ -1,0 +1,7 @@
+{
+  "name": "Call Center AI Trainer",
+  "description": "An interactive AI roleplay training tool for call center agents with real-time voice interaction and automated performance evaluation.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
