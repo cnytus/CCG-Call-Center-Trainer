@@ -459,18 +459,21 @@ export class GeminiService {
     
     // If strict structured criteria are provided, construct the prompt to enforce exact matching
     if (config.structuredCriteria && config.structuredCriteria.length > 0) {
+        // Create a clear list of items for the AI to follow
         const listItems = config.structuredCriteria.map((c, i) => 
-            `ITEM ${i+1}: ID="${c.id || i}", Name="${c.name}", Description="${c.description || ''}", MaxPoints=${c.maxPoints}`
+            `ITEM_INDEX ${i}: ID="${c.id || i}", Name="${c.name}", Description="${c.description || ''}", MaxPoints=${c.maxPoints}`
         ).join('\n');
 
         criteriaPromptSection = `
         STRICT EVALUATION REQUIRED:
-        You must evaluate the call against the following specific list of criteria items. 
-        Your output JSON "criteriaBreakdown" array MUST have exactly ${config.structuredCriteria.length} items, in the exact order listed below.
+        You have been provided a specific list of ${config.structuredCriteria.length} criteria items.
+        You must output a JSON array "criteriaBreakdown" with EXACTLY ${config.structuredCriteria.length} items.
+        The order MUST match the input list index (0 to ${config.structuredCriteria.length - 1}).
         
+        INPUT LIST:
         ${listItems}
         
-        For each item, provide a 'score' (0 to MaxPoints) and a 'comment'.
+        For each item, determine a 'score' (0 to MaxPoints) and a 'comment'.
         `;
     } else {
         // Fallback to text-based extraction if no structured object provided
@@ -547,12 +550,38 @@ export class GeminiService {
 
       const json = JSON.parse(response.text || '{}');
       
+      let finalCriteria: CriterionEvaluation[] = [];
+
+      // MERGE LOGIC: Enforce input structure strictly on the output
+      // This ensures we return the exact IDs, Names, and MaxPoints sent by the caller,
+      // using the AI only to fill in the score and comment.
+      if (config.structuredCriteria && config.structuredCriteria.length > 0) {
+          finalCriteria = config.structuredCriteria.map((input, index) => {
+              // We rely on index mapping since we instructed the AI to follow the order
+              const aiResponseItem = json.criteriaBreakdown?.[index];
+              
+              // Fallback if AI missed an item (unlikely with strict prompt but safe)
+              const score = aiResponseItem?.score !== undefined ? aiResponseItem.score : 0;
+              const comment = aiResponseItem?.comment || "Not evaluated.";
+
+              return {
+                  id: input.id,               // Enforce original ID
+                  name: input.name,           // Enforce original Name
+                  maxPoints: input.maxPoints, // Enforce original MaxPoints
+                  score: Math.min(score, input.maxPoints), // Ensure score doesn't exceed max
+                  comment: comment
+              };
+          });
+      } else {
+          finalCriteria = json.criteriaBreakdown || [];
+      }
+      
       return {
         agentName: config.agentName,
         totalScore: json.totalScore || 0,
         summary: json.summary || "No summary provided.",
-        criteriaBreakdown: json.criteriaBreakdown || [],
-        transcription: this.transcriptionHistory
+        criteriaBreakdown: finalCriteria,
+        transcription: this.transcriptionHistory // Complete transcription as requested
       };
     } catch (error) {
       console.error("Evaluation Generation Error:", error);

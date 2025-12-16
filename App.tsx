@@ -28,6 +28,35 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
     setAppState('CALL');
   };
 
+  const handleMockTest = () => {
+      const mockResult: EvaluationResult = {
+          agentName: initialAgentName || "Test Agent",
+          totalScore: 85,
+          summary: "MOCK EVALUATION: The agent followed standard procedures correctly. Verification was successful. The tone was professional throughout the call.",
+          criteriaBreakdown: externalCriteria ? externalCriteria.map((c, i) => ({
+              id: c.id || String(i),
+              name: c.name,
+              maxPoints: c.maxPoints,
+              score: Math.floor(c.maxPoints * 0.9),
+              comment: "Mock comment: Performance was good."
+          })) : [
+              { id: "1", name: "Greeting", score: 10, maxPoints: 10, comment: "Clear and professional greeting." },
+              { id: "2", name: "Verification", score: 10, maxPoints: 10, comment: "Correctly asked for customer number." },
+              { id: "3", name: "Solution", score: 20, maxPoints: 30, comment: "Provided correct info, but missed one detail." },
+              { id: "4", name: "Closing", score: 9, maxPoints: 10, comment: "Polite closing." }
+          ],
+          transcription: [
+              { role: "model", text: "Hi, I have a question about my invoice." },
+              { role: "user", text: "Hello, I can help. Can I have your customer number?" },
+              { role: "model", text: "It is 12345." }
+          ]
+      };
+      
+      setResult(mockResult);
+      setAppState('REPORT');
+      if (onSessionComplete) onSessionComplete(mockResult);
+  };
+
   const handleEndCall = async () => {
     setAppState('GENERATING_REPORT');
     // Disconnect call first
@@ -104,6 +133,7 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
             externalCriteria={externalCriteria}
             externalClientName={externalClientName}
             externalScenario={externalScenario}
+            onRunMock={handleMockTest}
           />
         )}
         

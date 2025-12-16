@@ -12,6 +12,7 @@ interface Props {
   externalCriteria?: ExternalCriterion[];
   externalClientName?: string;
   externalScenario?: string;
+  onRunMock?: () => void;
 }
 
 interface ParsedSheet {
@@ -52,7 +53,8 @@ const SetupScreen: React.FC<Props> = ({
   initialAgentName = '',
   externalCriteria,
   externalClientName = 'External Client',
-  externalScenario = 'General Assessment'
+  externalScenario = 'General Assessment',
+  onRunMock
 }) => {
   // Agent Details
   const [agentName, setAgentName] = useState(initialAgentName);
@@ -288,7 +290,7 @@ const SetupScreen: React.FC<Props> = ({
   }, [selectedClient, availableCallTypes, selectedCallType, externalCriteria, selectedPreset]);
 
   return (
-    <div className="max-w-4xl mx-auto p-6 bg-slate-800/50 backdrop-blur-md rounded-2xl border border-slate-700 shadow-xl animate-fade-in">
+    <div className="max-w-4xl mx-auto p-6 bg-slate-800/50 backdrop-blur-md rounded-2xl border border-slate-700 shadow-xl animate-fade-in relative">
       <h1 className="text-3xl font-bold mb-8 text-white text-center bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
         Agent Training Setup
       </h1>
@@ -575,6 +577,18 @@ const SetupScreen: React.FC<Props> = ({
         >
           {isAnalyzingAudio ? 'Initializing Preset...' : 'Start Session'}
         </button>
+
+        {onRunMock && (
+            <div className="pt-4 text-center border-t border-slate-800">
+                <button
+                    type="button"
+                    onClick={onRunMock}
+                    className="text-xs text-slate-500 hover:text-slate-300 underline"
+                >
+                    Developer: Test Integration (Send Mock Data)
+                </button>
+            </div>
+        )}
       </form>
     </div>
   );
