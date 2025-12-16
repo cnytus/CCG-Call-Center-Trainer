@@ -425,8 +425,6 @@ export class GeminiService {
    * Generates a final evaluation report based on the transcript history.
    */
   async generateEvaluation(config: SimulationConfig): Promise<EvaluationResult> {
-    // If transcript is empty, return dummy data to avoid errors, 
-    // but try to give feedback if at least some data exists.
     if (this.transcriptionHistory.length === 0) {
         return {
             agentName: config.agentName,
@@ -457,6 +455,35 @@ export class GeminiService {
         `;
     }
 
+    let criteriaPromptSection = "";
+    
+    // If strict structured criteria are provided, construct the prompt to enforce exact matching
+    if (config.structuredCriteria && config.structuredCriteria.length > 0) {
+        const listItems = config.structuredCriteria.map((c, i) => 
+            `ITEM ${i+1}: ID="${c.id || i}", Name="${c.name}", Description="${c.description || ''}", MaxPoints=${c.maxPoints}`
+        ).join('\n');
+
+        criteriaPromptSection = `
+        STRICT EVALUATION REQUIRED:
+        You must evaluate the call against the following specific list of criteria items. 
+        Your output JSON "criteriaBreakdown" array MUST have exactly ${config.structuredCriteria.length} items, in the exact order listed below.
+        
+        ${listItems}
+        
+        For each item, provide a 'score' (0 to MaxPoints) and a 'comment'.
+        `;
+    } else {
+        // Fallback to text-based extraction if no structured object provided
+        criteriaPromptSection = `
+        EVALUATION CRITERIA (Source Data):
+        ${config.evaluationCriteria}
+        
+        Analyze the text above. Identify every specific criterion mentioned.
+        - If the data has point values (e.g. "Greeting (10pts)" or column "Max Points"), use those as 'maxPoints'.
+        - If no points are listed, assume 10 points per item.
+        `;
+    }
+
     const prompt = `
       TASK: You are an expert Quality Assurance Evaluator for a call center. 
       Your job is to grade the following call transcript based *strictly* on the provided Evaluation Criteria.
@@ -466,8 +493,7 @@ export class GeminiService {
       2. Agent Name: ${config.agentName}
       3. Language: ${config.language}
       
-      EVALUATION CRITERIA (Source Data):
-      ${config.evaluationCriteria}
+      ${criteriaPromptSection}
 
       TRANSCRIPT OF CALL:
       ${conversationText}
@@ -475,15 +501,12 @@ export class GeminiService {
       ${learningContext}
 
       INSTRUCTIONS:
-      1. Analyze the "EVALUATION CRITERIA". Identify every specific criterion mentioned.
-         - If the data has point values (e.g. "Greeting (10pts)" or column "Max Points"), use those as 'maxPoints'.
-         - If no points are listed, assume 10 points per item.
-      2. Evaluate the "TRANSCRIPT" against these criteria.
-      3. For EACH criterion, provide:
+      1. Evaluate the "TRANSCRIPT" against the criteria.
+      2. For EACH criterion, provide:
          - A score (0 up to maxPoints).
          - A specific, constructive comment explaining why points were given or deducted.
-      4. Calculate the "totalScore" as a normalized percentage (0-100).
-      5. Provide a "summary" of the agent's overall performance (strengths/weaknesses).
+      3. Calculate the "totalScore" as a normalized percentage (0-100).
+      4. Provide a "summary" of the agent's overall performance (strengths/weaknesses).
 
       RETURN JSON ONLY matching the defined schema.
     `;
@@ -499,6 +522,7 @@ export class GeminiService {
           items: {
             type: Type.OBJECT,
             properties: {
+              id: { type: Type.STRING, description: "The ID of the criterion (if provided)" },
               name: { type: Type.STRING, description: "Name of the criterion (e.g., 'Greeting')" },
               score: { type: Type.NUMBER, description: "Points earned for this criterion" },
               maxPoints: { type: Type.NUMBER, description: "Maximum possible points for this criterion" },

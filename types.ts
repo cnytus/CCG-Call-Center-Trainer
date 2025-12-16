@@ -35,9 +35,12 @@ export interface SimulationConfig {
   difficulty: Difficulty;
   customContext: string; 
   evaluationCriteria: string;
+  // Added to store the raw object array for strict evaluation matching
+  structuredCriteria?: ExternalCriterion[];
 }
 
 export interface CriterionEvaluation {
+  id?: string | number;
   name: string;
   score: number;
   maxPoints: number;
@@ -50,4 +53,13 @@ export interface EvaluationResult {
   summary: string;
   criteriaBreakdown: CriterionEvaluation[];
   transcription: Array<{ role: 'user' | 'model'; text: string }>;
+}
+
+export interface CallCenterTrainerProps {
+  initialAgentName?: string;
+  externalCriteria?: ExternalCriterion[];
+  externalClientName?: string;
+  externalScenario?: string;
+  // Callback to return data to parent application
+  onSessionComplete?: (result: EvaluationResult) => void;
 }

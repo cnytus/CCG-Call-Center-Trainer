@@ -30,7 +30,8 @@ const PRESETS = [
     callType: 'Inbound',
     // We provide both text and audio paths. Logic prioritizes Audio for better persona, falls back to text.
     transcriptData: DPD_REAL_CALLS,
-    // Uncomment the audioUrls below only when you have placed the mp3 files in the public/audio folder.
+    // Audio URLs disabled to prevent 404 errors since files are not hosted yet.
+    // To enable, place files in /public/audio/ and uncomment.
     audioUrls: [] as string[]
     /* 
     audioUrls: [
@@ -267,7 +268,8 @@ const SetupScreen: React.FC<Props> = ({
       language,
       difficulty,
       customContext,
-      evaluationCriteria
+      evaluationCriteria,
+      structuredCriteria: externalCriteria // Pass the raw object for strict evaluation
     });
   };
 

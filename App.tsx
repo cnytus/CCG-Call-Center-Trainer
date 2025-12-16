@@ -4,23 +4,17 @@ import SetupScreen from './components/SetupScreen';
 import LiveCall from './components/LiveCall';
 import FeedbackReport from './components/FeedbackReport';
 import ChatWidget from './components/ChatWidget';
-import { SimulationConfig, EvaluationResult, ExternalCriterion } from './types';
+import { SimulationConfig, EvaluationResult, CallCenterTrainerProps } from './types';
 import { geminiService } from './services/geminiService';
 
 type AppState = 'SETUP' | 'CALL' | 'GENERATING_REPORT' | 'REPORT';
-
-export interface CallCenterTrainerProps {
-  initialAgentName?: string;
-  externalCriteria?: ExternalCriterion[];
-  externalClientName?: string;
-  externalScenario?: string;
-}
 
 export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
   initialAgentName = '',
   externalCriteria,
   externalClientName,
-  externalScenario
+  externalScenario,
+  onSessionComplete
 }) => {
   const [appState, setAppState] = useState<AppState>('SETUP');
   const [config, setConfig] = useState<SimulationConfig | null>(null);
@@ -45,6 +39,12 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
         const evalResult = await geminiService.generateEvaluation(config);
         setResult(evalResult);
         setAppState('REPORT');
+        
+        // Return data to parent application if callback exists
+        if (onSessionComplete) {
+            onSessionComplete(evalResult);
+        }
+
       } catch (e) {
         console.error("Failed to generate report", e);
         // Reset to setup on critical error
@@ -66,6 +66,11 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
         geminiService.submitCorrection(result, correctedResult);
         // Update local state so UI reflects "saved"
         setResult(correctedResult);
+        
+        // Also send corrected result back to parent app
+        if (onSessionComplete) {
+            onSessionComplete(correctedResult);
+        }
     }
   };
 
