@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { geminiService } from '../services/geminiService';
 
@@ -14,8 +15,8 @@ const ChatWidget: React.FC = () => {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  // Updated default model to a supported version
-  const [model, setModel] = useState('gemini-2.5-flash');
+  // Updated default model to a supported version according to guidelines
+  const [model, setModel] = useState('gemini-3-flash-preview');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -69,7 +70,7 @@ const ChatWidget: React.FC = () => {
               onChange={(e) => setModel(e.target.value)}
               className="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-slate-300 focus:outline-none focus:border-blue-500"
             >
-              <option value="gemini-2.5-flash">Fast (2.5 Flash)</option>
+              <option value="gemini-3-flash-preview">Fast (3.0 Flash)</option>
               <option value="gemini-3-pro-preview">Smart (3.0 Pro)</option>
             </select>
           </div>

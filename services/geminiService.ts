@@ -10,7 +10,7 @@ interface LearningExample {
   criterionName: string;
   aiComment: string;
   humanComment: string;
-  scoreDifference: number; // e.g., Human gave 8, AI gave 10 = -2
+  scoreDifference: number;
   timestamp: number;
 }
 
@@ -23,15 +23,11 @@ export class GeminiService {
   private sources = new Set<AudioBufferSourceNode>();
   private transcriptionHistory: Array<{ role: 'user' | 'model'; text: string }> = [];
   
-  // Persistent nodes to prevent Garbage Collection
   private mediaStreamSource: MediaStreamAudioSourceNode | null = null;
   private audioProcessor: ScriptProcessorNode | null = null;
   
-  // Temporary buffers for real-time transcription
   private currentInputTranscription = '';
   private currentOutputTranscription = '';
-
-  // Learning Memory
   private learningHistory: LearningExample[] = [];
 
   constructor() {
@@ -44,492 +40,198 @@ export class GeminiService {
       const stored = localStorage.getItem('ai_training_data');
       if (stored) {
         this.learningHistory = JSON.parse(stored);
-        console.log(`Loaded ${this.learningHistory.length} training examples.`);
       }
     } catch (e) {
       console.error("Failed to load AI training data", e);
     }
   }
 
-  /**
-   * Accepts a corrected evaluation from the human QA manager.
-   * Compares the original AI result with the Human result and stores significant differences.
-   */
   public submitCorrection(original: EvaluationResult, corrected: EvaluationResult) {
     if (!original.criteriaBreakdown || !corrected.criteriaBreakdown) return;
-
     let learnedSomething = false;
 
     corrected.criteriaBreakdown.forEach((humanItem) => {
       const aiItem = original.criteriaBreakdown.find(i => i.name === humanItem.name);
       if (!aiItem) return;
 
-      // If score changed or comment changed significantly, record it
       if (aiItem.score !== humanItem.score || aiItem.comment !== humanItem.comment) {
-        const example: LearningExample = {
+        this.learningHistory.unshift({
           criterionName: humanItem.name,
           aiComment: aiItem.comment,
           humanComment: humanItem.comment,
           scoreDifference: humanItem.score - aiItem.score,
           timestamp: Date.now()
-        };
-        
-        // Keep history manageable (last 50 corrections)
-        this.learningHistory.unshift(example);
+        });
         learnedSomething = true;
       }
     });
 
-    if (this.learningHistory.length > 50) {
-      this.learningHistory = this.learningHistory.slice(0, 50);
-    }
-
-    if (learnedSomething) {
-      localStorage.setItem('ai_training_data', JSON.stringify(this.learningHistory));
-      console.log("AI has learned from corrections. Total examples:", this.learningHistory.length);
-    }
+    if (this.learningHistory.length > 50) this.learningHistory = this.learningHistory.slice(0, 50);
+    if (learnedSomething) localStorage.setItem('ai_training_data', JSON.stringify(this.learningHistory));
   }
 
-  /**
-   * Generates the system instruction based on the user's configuration.
-   */
   private getSystemInstruction(config: SimulationConfig): string {
     return `
-      You are a world-class actor roleplaying a customer calling a call center. 
-      Do NOT act like an AI. Act exactly like a human customer.
+      ROLE: You are the CUSTOMER calling a call center.
+      CRITICAL RULE: You MUST ONLY play the role of the CUSTOMER. NEVER play the role of the call center agent. 
+      The person speaking to you (the User) is the AGENT. You are the one with the problem or inquiry.
       
-      SCENARIO DETAILS:
-      - Agent Name: ${config.agentName} (You may wish to greet them or use their name if they introduce themselves).
-      - Topic: ${config.scenario}
-      - Client/Brand: ${config.clientName || 'General'}
-      - Call Type: ${config.callType || 'General'}
-      - Language: ${config.language} (Speak ONLY in this language).
-      - Difficulty Level: ${config.difficulty}.
+      SCENARIO:
+      - Your Name: (Pick a realistic name or use one from context)
+      - Calling for: ${config.clientName || 'General Service'}
+      - Problem: ${config.scenario}
+      - Language: ${config.language} (Speak ONLY this language)
+      - Persona: ${config.difficulty}. 
+
+      BEHAVIOR:
+      - You are a real human. If the agent greets you, state your problem.
+      - If the agent asks for your name or account number, provide it (invent it if not in context).
+      - If the agent is incompetent, get frustrated (based on difficulty).
+      - If the agent is helpful, be polite.
+      - DO NOT explain that you are an AI. Stay in character until the call ends.
       
-      CONTEXT & CRITERIA DATA:
-      The user has provided the following data (Context and Evaluation Criteria) which you must follow strictly.
-      If this data contains specific customer details (Name, Account #), use them.
-      If it contains a script or checklist, ensure your behavior triggers those checklist items for the agent to solve.
-      
-      --- START OF DATA ---
+      CONTEXT FOR YOUR PROBLEM:
       ${config.customContext}
-      ${config.evaluationCriteria !== config.customContext ? config.evaluationCriteria : ''}
-      --- END OF DATA ---
-
-      BEHAVIOR GUIDELINES:
-      - If difficulty is EASY: Be patient, clear, and polite.
-      - If difficulty is MEDIUM: Be normal, ask standard follow-up questions.
-      - If difficulty is HARD: Be impatient, interrupt occasionally, or express frustration.
-      - Keep your responses concise (spoken conversation style).
       
-      YOUR GOAL:
-      - Test the agent based on the provided criteria/data.
-      - Do not mention the criteria to the agent. Just provide the scenarios that trigger the need for these criteria.
-      
-      Start the conversation immediately as if the call just connected.
+      Begin the call now.
     `;
   }
 
-  /**
-   * Analyzes reference audio files (File objects) to extract customer persona.
-   */
-  async analyzeReferenceCalls(files: File[]): Promise<string> {
-    const parts = [];
-    parts.push(this.getAnalysisPromptPart());
-
-    for (const file of files) {
-      const base64 = await fileToBase64(file);
-      parts.push({
-        inlineData: { mimeType: file.type || 'audio/mp3', data: base64 }
-      });
-    }
-
-    return this.executeAnalysis(parts);
-  }
-
-  /**
-   * Analyzes reference audio from URLs (for pre-loaded presets).
-   */
-  async analyzePersonaFromUrls(urls: string[]): Promise<string> {
-    const parts = [];
-    parts.push(this.getAnalysisPromptPart());
-
-    for (const url of urls) {
-        try {
-            const base64 = await fetchAudioAsBase64(url);
-            // Guess mime type based on extension, default to mp3
-            const mimeType = url.endsWith('.wav') ? 'audio/wav' : 'audio/mp3';
-            parts.push({
-                inlineData: { mimeType, data: base64 }
-            });
-        } catch (e) {
-            console.error(`Skipping file ${url}:`, e);
-            // Continue with other files if one fails
-        }
-    }
-
-    if (parts.length <= 1) {
-        throw new Error("No valid audio files could be loaded for analysis.");
-    }
-
-    return this.executeAnalysis(parts);
-  }
-
-  /**
-   * Analyzes text transcripts to extract customer persona.
-   */
-  async analyzePersonaFromText(transcript: string): Promise<string> {
-    const prompt = `
-      You are an expert Call Center Analyst.
-      Below are transcripts of REAL customer calls for DPD Inbound.
-
-      Your task is to extract a "Simulation Profile" so an actor can replicate this customer's behavior.
-
-      Please Identify:
-      1. Common Issues (e.g. Express pickup failures, label printing issues, missed pickups).
-      2. The Customer Persona (Tone, vocabulary, patience level, typical phrasing).
-      3. Key Phrases or specific terminology used (e.g., "Verteilerdepot", "Abholauftrag", "Datenabgleich").
-
-      Combine these into a concise summary titled "LEARNED PATTERNS FROM REAL CALLS".
-
-      TRANSCRIPTS:
-      ${transcript}
-    `;
-
-     const response = await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-      return response.text || "Could not analyze transcripts.";
-  }
-
-  private getAnalysisPromptPart() {
-      return {
-          text: `You are an expert Call Center Analyst. 
-          Please listen to these audio recordings of real customer calls.
-          
-          Your task is to extract a "Simulation Profile" so an actor can replicate this customer's behavior.
-          
-          Please Identify:
-          1. The specific technical/logistical issue discussed (e.g. "Parcel stuck at depot").
-          2. The Customer Persona (Tone, vocabulary, patience level, speed of speech).
-          3. Key Phrases or specific terminology the customer used.
-          
-          Combine these into a concise summary titled "LEARNED PATTERNS FROM REAL AUDIO".`
-      };
-  }
-
-  private async executeAnalysis(parts: any[]): Promise<string> {
-    try {
-      const response = await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: { parts: parts },
-      });
-      return response.text || "Could not analyze audio.";
-    } catch (e) {
-      console.error("Audio analysis failed", e);
-      throw new Error("Failed to analyze reference audio files.");
-    }
-  }
-
-  /**
-   * Connects to the Gemini Live API.
-   */
-  async connect(
-    config: SimulationConfig, 
-    onAudioData: (frequencyData: Uint8Array) => void,
-    onDisconnect: () => void
-  ): Promise<void> {
+  async connect(config: SimulationConfig, onAudioData: (frequencyData: Uint8Array) => void, onDisconnect: () => void): Promise<void> {
     this.transcriptionHistory = [];
     this.nextStartTime = 0;
-
-    // Initialize Audio Contexts
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
     this.inputAudioContext = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE });
     this.outputAudioContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
 
-    // Explicitly resume contexts to ensure they are active (browsers may suspend them)
-    if (this.inputAudioContext.state === 'suspended') {
-        await this.inputAudioContext.resume();
-    }
-    if (this.outputAudioContext.state === 'suspended') {
-        await this.outputAudioContext.resume();
-    }
+    if (this.inputAudioContext.state === 'suspended') await this.inputAudioContext.resume();
+    if (this.outputAudioContext.state === 'suspended') await this.outputAudioContext.resume();
 
-    // Microphone Stream
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    
-    // Store nodes in instance to prevent Garbage Collection
     this.mediaStreamSource = this.inputAudioContext.createMediaStreamSource(stream);
     this.audioProcessor = this.inputAudioContext.createScriptProcessor(4096, 1, 1);
     
-    // Establish Live Session
     const sessionPromise = this.ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-09-2025',
       callbacks: {
         onopen: () => {
-          console.log("Gemini Live Session Opened");
-          
           if (!this.audioProcessor || !this.mediaStreamSource || !this.inputAudioContext) return;
-
           this.audioProcessor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
-            
-            const pcmBlob = createAudioBlob(inputData, INPUT_SAMPLE_RATE);
-            
             sessionPromise.then((session) => {
-              session.sendRealtimeInput({ media: pcmBlob });
+              session.sendRealtimeInput({ media: createAudioBlob(inputData, INPUT_SAMPLE_RATE) });
             });
           };
-
           this.mediaStreamSource.connect(this.audioProcessor);
           this.audioProcessor.connect(this.inputAudioContext.destination);
         },
         onmessage: async (message: LiveServerMessage) => {
-          await this.handleServerMessage(message, onAudioData);
+          if (message.serverContent?.outputTranscription) this.currentOutputTranscription += message.serverContent.outputTranscription.text;
+          else if (message.serverContent?.inputTranscription) this.currentInputTranscription += message.serverContent.inputTranscription.text;
+          if (message.serverContent?.turnComplete) {
+            if (this.currentInputTranscription.trim()) this.transcriptionHistory.push({ role: 'user', text: this.currentInputTranscription });
+            if (this.currentOutputTranscription.trim()) this.transcriptionHistory.push({ role: 'model', text: this.currentOutputTranscription });
+            this.currentInputTranscription = ''; this.currentOutputTranscription = '';
+          }
+          const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+          if (base64Audio && this.outputAudioContext) {
+            this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
+            const audioBuffer = await decodeAudioData(base64Audio, this.outputAudioContext, OUTPUT_SAMPLE_RATE);
+            const source = this.outputAudioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            const analyser = this.outputAudioContext.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser); analyser.connect(this.outputAudioContext.destination);
+            source.start(this.nextStartTime);
+            this.nextStartTime += audioBuffer.duration; this.sources.add(source);
+            source.onended = () => this.sources.delete(source);
+            const updateVisualizer = () => {
+              if (this.sources.has(source)) {
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArray); onAudioVisualizer(dataArray);
+                requestAnimationFrame(updateVisualizer);
+              }
+            };
+            const onAudioVisualizer = onAudioData;
+            updateVisualizer();
+          }
         },
-        onclose: () => {
-          console.log("Gemini Live Session Closed");
-          onDisconnect();
-        },
-        onerror: (err) => {
-          console.error("Gemini Live Error", err);
-          onDisconnect();
-        }
+        onclose: () => onDisconnect(),
+        onerror: () => onDisconnect()
       },
       config: {
         responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } },
-        },
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
         systemInstruction: this.getSystemInstruction(config),
         inputAudioTranscription: {},
         outputAudioTranscription: {},
       },
     });
-
     this.session = await sessionPromise;
   }
 
-  /**
-   * Handles incoming messages (Audio & Transcription).
-   */
-  private async handleServerMessage(
-    message: LiveServerMessage, 
-    onAudioVisualizer: (data: Uint8Array) => void
-  ) {
-    // 1. Handle Transcription
-    if (message.serverContent?.outputTranscription) {
-      this.currentOutputTranscription += message.serverContent.outputTranscription.text;
-    } else if (message.serverContent?.inputTranscription) {
-      this.currentInputTranscription += message.serverContent.inputTranscription.text;
-    }
-
-    if (message.serverContent?.turnComplete) {
-        if (this.currentInputTranscription.trim()) {
-            this.transcriptionHistory.push({ role: 'user', text: this.currentInputTranscription });
-            this.currentInputTranscription = '';
-        }
-        if (this.currentOutputTranscription.trim()) {
-            this.transcriptionHistory.push({ role: 'model', text: this.currentOutputTranscription });
-            this.currentOutputTranscription = '';
-        }
-    }
-
-    // 2. Handle Audio Playback
-    const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-    if (base64Audio && this.outputAudioContext) {
-      // Manage playback timing
-      this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
-      
-      const audioBuffer = await decodeAudioData(
-        base64Audio, 
-        this.outputAudioContext, 
-        OUTPUT_SAMPLE_RATE
-      );
-
-      const source = this.outputAudioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      
-      // Analyzer for visualization
-      const analyser = this.outputAudioContext.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyser.connect(this.outputAudioContext.destination);
-
-      source.start(this.nextStartTime);
-      this.nextStartTime += audioBuffer.duration;
-      this.sources.add(source);
-
-      source.onended = () => {
-        this.sources.delete(source);
-      };
-
-      // Push visualizer data
-      const updateVisualizer = () => {
-        if (this.sources.has(source)) {
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          analyser.getByteFrequencyData(dataArray);
-          onAudioVisualizer(dataArray);
-          requestAnimationFrame(updateVisualizer);
-        }
-      };
-      updateVisualizer();
-    }
-  }
-
   async disconnect() {
-    // Capture any pending transcripts before closing
-    if (this.currentInputTranscription.trim()) {
-        this.transcriptionHistory.push({ role: 'user', text: this.currentInputTranscription });
-        this.currentInputTranscription = '';
-    }
-    if (this.currentOutputTranscription.trim()) {
-        this.transcriptionHistory.push({ role: 'model', text: this.currentOutputTranscription });
-        this.currentOutputTranscription = '';
-    }
-
-    if (this.session) {
-      this.session.close();
-      this.session = null;
-    }
-    
-    // Stop Microphone
-    if (this.mediaStreamSource && this.audioProcessor) {
-        this.mediaStreamSource.disconnect();
-        this.audioProcessor.disconnect();
-    }
-    this.mediaStreamSource = null;
-    this.audioProcessor = null;
-
-    if (this.inputAudioContext) {
-        if (this.inputAudioContext.state !== 'closed') {
-            await this.inputAudioContext.close();
-        }
-        this.inputAudioContext = null;
-    }
-
-    // Stop Playback
+    if (this.currentInputTranscription.trim()) this.transcriptionHistory.push({ role: 'user', text: this.currentInputTranscription });
+    if (this.currentOutputTranscription.trim()) this.transcriptionHistory.push({ role: 'model', text: this.currentOutputTranscription });
+    this.currentInputTranscription = ''; this.currentOutputTranscription = '';
+    if (this.session) this.session.close();
+    if (this.mediaStreamSource) this.mediaStreamSource.disconnect();
+    if (this.audioProcessor) this.audioProcessor.disconnect();
     this.sources.forEach(s => s.stop());
     this.sources.clear();
-    
-    if (this.outputAudioContext) {
-        if (this.outputAudioContext.state !== 'closed') {
-            await this.outputAudioContext.close();
-        }
-        this.outputAudioContext = null;
-    }
   }
 
-  /**
-   * Generates a final evaluation report based on the transcript history.
-   */
   async generateEvaluation(config: SimulationConfig): Promise<EvaluationResult> {
-    if (this.transcriptionHistory.length === 0) {
-        return {
-            agentName: config.agentName,
-            totalScore: 0,
-            summary: "Call was too short to evaluate. No audio transcription was recorded.",
-            criteriaBreakdown: [],
-            transcription: []
-        };
-    }
-
     const conversationText = this.transcriptionHistory
-      .map(t => `${t.role === 'user' ? 'AGENT (User)' : 'CUSTOMER (AI)'}: ${t.text}`)
-      .join('\n');
+      .map(t => `${t.role === 'user' ? 'AGENT' : 'CUSTOMER'}: ${t.text}`).join('\n');
 
-    // Format Learning History for the prompt
-    let learningContext = "";
-    if (this.learningHistory.length > 0) {
-        const examples = this.learningHistory.map(ex => 
-            `- When evaluating "${ex.criterionName}", a human corrected me previously. \n  My initial thought: "${ex.aiComment}"\n  The Correction: "${ex.humanComment}"\n  Score Adjustment: ${ex.scoreDifference > 0 ? '+' : ''}${ex.scoreDifference} points.`
-        ).join('\n');
-        
-        learningContext = `
-        IMPORTANT - LEARNING FROM HUMAN CORRECTIONS:
-        I have received feedback from a QA Manager on previous evaluations. Use this feedback to adjust your current evaluation logic:
-        ${examples}
-        
-        If you encounter similar situations in this transcript, apply the logic from the "Correction" above.
-        `;
-    }
-
-    let criteriaPromptSection = "";
-    
-    // If strict structured criteria are provided, construct the prompt to enforce exact matching
-    if (config.structuredCriteria && config.structuredCriteria.length > 0) {
-        // Create a clear list of items for the AI to follow
-        const listItems = config.structuredCriteria.map((c, i) => 
-            `ITEM_INDEX ${i}: ID="${c.id || i}", Name="${c.name}", Description="${c.description || ''}", MaxPoints=${c.maxPoints}`
-        ).join('\n');
-
-        criteriaPromptSection = `
-        STRICT EVALUATION REQUIRED:
-        You have been provided a specific list of ${config.structuredCriteria.length} criteria items.
-        You must output a JSON array "criteriaBreakdown" with EXACTLY ${config.structuredCriteria.length} items.
-        The order MUST match the input list index (0 to ${config.structuredCriteria.length - 1}).
-        
-        INPUT LIST:
-        ${listItems}
-        
-        For each item, determine a 'score' (0 to MaxPoints) and a 'comment'.
+    let criteriaPrompt = "";
+    if (config.structuredCriteria) {
+        criteriaPrompt = `
+        STRICT EVALUATION CRITERIA:
+        ${config.structuredCriteria.map((c, i) => `[CRITERION ${i}] ID: ${c.id || i}, Name: ${c.name}, Max Points: ${c.maxPoints}, Goal: ${c.description || 'N/A'}`).join('\n')}
         `;
     } else {
-        // Fallback to text-based extraction if no structured object provided
-        criteriaPromptSection = `
-        EVALUATION CRITERIA (Source Data):
-        ${config.evaluationCriteria}
-        
-        Analyze the text above. Identify every specific criterion mentioned.
-        - If the data has point values (e.g. "Greeting (10pts)" or column "Max Points"), use those as 'maxPoints'.
-        - If no points are listed, assume 10 points per item.
-        `;
+        criteriaPrompt = `CRITERIA LIST: ${config.evaluationCriteria}`;
     }
 
     const prompt = `
-      TASK: You are an expert Quality Assurance Evaluator for a call center. 
-      Your job is to grade the following call transcript based *strictly* on the provided Evaluation Criteria.
+      PERSONA: You are a Senior Quality Assurance and Training Manager with 20 years of experience in call center operations.
+      TASK: Conduct a formal performance review of the following call transcript. 
+      The User played the role of the AGENT. You previously played the role of the CUSTOMER.
 
-      INPUT DATA:
-      1. Scenario: ${config.scenario}
-      2. Agent Name: ${config.agentName}
-      3. Language: ${config.language}
+      EVALUATION STANDARDS:
+      - Be objective, professional, and thorough.
+      - Grade the agent against the specific criteria provided below.
+      - For each item, provide a score (0 to Max) and a detailed manager comment explaining the reasoning.
       
-      ${criteriaPromptSection}
+      ${criteriaPrompt}
 
-      TRANSCRIPT OF CALL:
+      TRANSCRIPT OF THE CALL:
       ${conversationText}
 
-      ${learningContext}
-
       INSTRUCTIONS:
-      1. Evaluate the "TRANSCRIPT" against the criteria.
-      2. For EACH criterion, provide:
-         - A score (0 up to maxPoints).
-         - A specific, constructive comment explaining why points were given or deducted.
-      3. Calculate the "totalScore" as a normalized percentage (0-100).
-      4. Provide a "summary" of the agent's overall performance (strengths/weaknesses).
-
-      RETURN JSON ONLY matching the defined schema.
+      1. Analyze the transcript for evidence of meeting each criterion.
+      2. If a criterion was not addressed, explain why in the comment and give 0 points.
+      3. Return your final evaluation in the requested JSON format.
+      4. Ensure "totalScore" is a percentage (0-100) based on total points earned vs total points possible.
     `;
 
-    // Define the schema using the SDK's Schema definitions
-    const jsonSchema: Schema = {
+    const schema: Schema = {
       type: Type.OBJECT,
       properties: {
-        totalScore: { type: Type.NUMBER, description: "Overall percentage score (0-100)" },
-        summary: { type: Type.STRING, description: "Executive summary of the agent's performance" },
+        totalScore: { type: Type.NUMBER, description: "Normalized percentage score 0-100" },
+        summary: { type: Type.STRING, description: "Professional summary from the Training Manager" },
         criteriaBreakdown: {
           type: Type.ARRAY,
           items: {
             type: Type.OBJECT,
             properties: {
-              id: { type: Type.STRING, description: "The ID of the criterion (if provided)" },
-              name: { type: Type.STRING, description: "Name of the criterion (e.g., 'Greeting')" },
-              score: { type: Type.NUMBER, description: "Points earned for this criterion" },
-              maxPoints: { type: Type.NUMBER, description: "Maximum possible points for this criterion" },
-              comment: { type: Type.STRING, description: "Feedback explaining the score" }
+              id: { type: Type.STRING },
+              name: { type: Type.STRING },
+              score: { type: Type.NUMBER },
+              maxPoints: { type: Type.NUMBER },
+              comment: { type: Type.STRING }
             },
             required: ['name', 'score', 'maxPoints', 'comment']
           }
@@ -540,86 +242,69 @@ export class GeminiService {
 
     try {
       const response = await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3-pro-preview', // Using Pro for high-quality evaluation reasoning
         contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: jsonSchema
-        }
+        config: { responseMimeType: 'application/json', responseSchema: schema }
       });
 
       const json = JSON.parse(response.text || '{}');
-      
       let finalCriteria: CriterionEvaluation[] = [];
 
-      // MERGE LOGIC: Enforce input structure strictly on the output
-      // This ensures we return the exact IDs, Names, and MaxPoints sent by the caller,
-      // using the AI only to fill in the score and comment.
-      if (config.structuredCriteria && config.structuredCriteria.length > 0) {
-          finalCriteria = config.structuredCriteria.map((input, index) => {
-              // We rely on index mapping since we instructed the AI to follow the order
-              const aiResponseItem = json.criteriaBreakdown?.[index];
-              
-              // Fallback if AI missed an item (unlikely with strict prompt but safe)
-              const score = aiResponseItem?.score !== undefined ? aiResponseItem.score : 0;
-              const comment = aiResponseItem?.comment || "Not evaluated.";
-
+      // Ensure we return the EXACT structure the user provided
+      if (config.structuredCriteria) {
+          finalCriteria = config.structuredCriteria.map((input, idx) => {
+              const aiItem = json.criteriaBreakdown?.[idx] || json.criteriaBreakdown?.find((item: any) => item.name === input.name);
               return {
-                  id: input.id,               // Enforce original ID
-                  name: input.name,           // Enforce original Name
-                  maxPoints: input.maxPoints, // Enforce original MaxPoints
-                  score: Math.min(score, input.maxPoints), // Ensure score doesn't exceed max
-                  comment: comment
+                  id: input.id,
+                  name: input.name,
+                  maxPoints: input.maxPoints,
+                  score: aiItem ? Math.min(aiItem.score, input.maxPoints) : 0,
+                  comment: aiItem?.comment || "Criterion not satisfied or not attempted during the conversation."
               };
           });
       } else {
           finalCriteria = json.criteriaBreakdown || [];
       }
-      
+
       return {
         agentName: config.agentName,
         totalScore: json.totalScore || 0,
-        summary: json.summary || "No summary provided.",
+        summary: json.summary || "No executive summary provided.",
         criteriaBreakdown: finalCriteria,
-        transcription: this.transcriptionHistory // Complete transcription as requested
-      };
-    } catch (error) {
-      console.error("Evaluation Generation Error:", error);
-      // Fallback response in case of API failure
-      return {
-        agentName: config.agentName,
-        totalScore: 0,
-        summary: "Error generating evaluation. Please try again.",
-        criteriaBreakdown: [],
         transcription: this.transcriptionHistory
       };
+    } catch (e) {
+      console.error("Eval Error:", e);
+      return { agentName: config.agentName, totalScore: 0, summary: "Technical error during evaluation generation.", criteriaBreakdown: [], transcription: this.transcriptionHistory };
     }
   }
 
-  /**
-   * Sends a text message to the chatbot.
-   */
-  async sendChatMessage(
-    model: string, 
-    history: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>, 
-    message: string
-  ): Promise<string> {
-    try {
-      const chat = this.ai.chats.create({
-        model: model,
-        history: history,
-        config: {
-            systemInstruction: "You are a helpful AI assistant for a call center agent training app. Keep your answers concise and helpful."
-        }
+  async analyzeReferenceCalls(files: File[]): Promise<string> {
+    const parts: any[] = [{ text: "Extract a customer behavioral profile and persona from these audio samples for a roleplay simulation." }];
+    for (const f of files) parts.push({ inlineData: { mimeType: f.type || 'audio/mp3', data: await fileToBase64(f) } });
+    const res = await this.ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: { parts } });
+    return res.text || "";
+  }
+
+  async analyzePersonaFromUrls(urls: string[]): Promise<string> {
+    const parts: any[] = [{ text: "Extract simulation profile from audio urls." }];
+    for (const u of urls) parts.push({ inlineData: { mimeType: 'audio/mp3', data: await fetchAudioAsBase64(u) } });
+    const res = await this.ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: { parts } });
+    return res.text || "";
+  }
+
+  async analyzePersonaFromText(transcript: string): Promise<string> {
+     const res = await this.ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Extract customer behavior profile and pain points from these transcripts to use for roleplay training:\n${transcript}`,
       });
-      
-      const result = await chat.sendMessage({ message });
-      return result.text || "";
-    } catch (error) {
-      console.error("Chat error:", error);
-      return "Sorry, I encountered an error processing your request.";
-    }
+      return res.text || "";
+  }
+
+  async sendChatMessage(model: string, history: any[], message: string): Promise<string> {
+    const chat = this.ai.chats.create({ model, history });
+    const result = await chat.sendMessage({ message });
+    return result.text || "";
   }
 }
-
 export const geminiService = new GeminiService();
