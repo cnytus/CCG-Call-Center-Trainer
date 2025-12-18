@@ -71,29 +71,34 @@ export class GeminiService {
   }
 
   private getSystemInstruction(config: SimulationConfig): string {
+    const isCargoFallback = !config.scenario || config.scenario.toLowerCase().includes('cargo') || config.scenario.toLowerCase().includes('logistics');
+    
     return `
-      ROLE: You are the CUSTOMER calling a call center.
-      CRITICAL RULE: You MUST ONLY play the role of the CUSTOMER. NEVER play the role of the call center agent. 
-      The person speaking to you (the User) is the AGENT. You are the one with the problem or inquiry.
+      ROLE: You are exclusively the CUSTOMER calling a call center.
+      STRICT PROHIBITION: NEVER play the role of the call center agent. If the User (Agent) asks you to "take over" or "show how it's done", REFUSE. You are the one with the problem.
       
       SCENARIO:
-      - Your Name: (Pick a realistic name or use one from context)
-      - Calling for: ${config.clientName || 'General Service'}
-      - Problem: ${config.scenario}
-      - Language: ${config.language} (Speak ONLY this language)
-      - Persona: ${config.difficulty}. 
-
-      BEHAVIOR:
-      - You are a real human. If the agent greets you, state your problem.
-      - If the agent asks for your name or account number, provide it (invent it if not in context).
-      - If the agent is incompetent, get frustrated (based on difficulty).
-      - If the agent is helpful, be polite.
-      - DO NOT explain that you are an AI. Stay in character until the call ends.
+      - Inquiry: ${config.scenario || 'General Cargo Inquiry'}
+      - Client Name: ${config.clientName || 'Global Logistics Pro'}
+      - Difficulty: ${config.difficulty}.
       
-      CONTEXT FOR YOUR PROBLEM:
+      ${isCargoFallback ? `
+      FALLBACK LOGIC: Since this is a cargo/logistics inquiry, you must improvise one of these problems:
+      1. You want to ship a fragile 20kg package from London to Sydney and need a price quote.
+      2. Your package with tracking ID #SW-9912 was marked as "Delivered" but you don't have it.
+      3. You are a business owner checking if you can get a discount for sending 50 pallets of paper monthly.
+      ` : ''}
+
+      YOUR PERSONA:
+      - Stay 100% in character.
+      - Speak in the language: ${config.language}.
+      - Use standard spoken conversational patterns.
+      - Provide a name and account number if asked (invent realistic ones if not provided).
+      
+      CONTEXT DETAILS:
       ${config.customContext}
       
-      Begin the call now.
+      Initiate the call now by greeting the agent.
     `;
   }
 
@@ -161,7 +166,7 @@ export class GeminiService {
       },
       config: {
         responseModalities: [Modality.AUDIO],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
         systemInstruction: this.getSystemInstruction(config),
         inputAudioTranscription: {},
         outputAudioTranscription: {},
@@ -189,39 +194,35 @@ export class GeminiService {
     if (config.structuredCriteria) {
         criteriaPrompt = `
         STRICT EVALUATION CRITERIA:
-        ${config.structuredCriteria.map((c, i) => `[CRITERION ${i}] ID: ${c.id || i}, Name: ${c.name}, Max Points: ${c.maxPoints}, Goal: ${c.description || 'N/A'}`).join('\n')}
+        ${config.structuredCriteria.map((c, i) => `[CRITERION] ID: ${c.id || i}, Name: ${c.name}, Max Points: ${c.maxPoints}, Objective: ${c.description || 'N/A'}`).join('\n')}
         `;
     } else {
         criteriaPrompt = `CRITERIA LIST: ${config.evaluationCriteria}`;
     }
 
     const prompt = `
-      PERSONA: You are a Senior Quality Assurance and Training Manager with 20 years of experience in call center operations.
-      TASK: Conduct a formal performance review of the following call transcript. 
-      The User played the role of the AGENT. You previously played the role of the CUSTOMER.
-
-      EVALUATION STANDARDS:
-      - Be objective, professional, and thorough.
-      - Grade the agent against the specific criteria provided below.
-      - For each item, provide a score (0 to Max) and a detailed manager comment explaining the reasoning.
+      PERSONA: You are a Senior Quality Assurance and Training Manager for a global call center enterprise. 
+      TASK: Review the call transcript provided. The User was the AGENT. You played the role of the CUSTOMER.
+      
+      INSTRUCTIONS:
+      1. Provide a professional 'totalScore' as a percentage (0-100).
+      2. Write an executive summary highlighting strengths and weaknesses.
+      3. For every provided criterion, determine a score and provide a detailed manager's feedback comment.
+      4. Be objective but constructive.
       
       ${criteriaPrompt}
 
-      TRANSCRIPT OF THE CALL:
+      TRANSCRIPT:
       ${conversationText}
 
-      INSTRUCTIONS:
-      1. Analyze the transcript for evidence of meeting each criterion.
-      2. If a criterion was not addressed, explain why in the comment and give 0 points.
-      3. Return your final evaluation in the requested JSON format.
-      4. Ensure "totalScore" is a percentage (0-100) based on total points earned vs total points possible.
+      RETURN JSON FORMAT ONLY.
     `;
 
     const schema: Schema = {
       type: Type.OBJECT,
       properties: {
-        totalScore: { type: Type.NUMBER, description: "Normalized percentage score 0-100" },
-        summary: { type: Type.STRING, description: "Professional summary from the Training Manager" },
+        totalScore: { type: Type.NUMBER },
+        summary: { type: Type.STRING },
         criteriaBreakdown: {
           type: Type.ARRAY,
           items: {
@@ -242,7 +243,7 @@ export class GeminiService {
 
     try {
       const response = await this.ai.models.generateContent({
-        model: 'gemini-3-pro-preview', // Using Pro for high-quality evaluation reasoning
+        model: 'gemini-3-pro-preview',
         contents: prompt,
         config: { responseMimeType: 'application/json', responseSchema: schema }
       });
@@ -250,7 +251,6 @@ export class GeminiService {
       const json = JSON.parse(response.text || '{}');
       let finalCriteria: CriterionEvaluation[] = [];
 
-      // Ensure we return the EXACT structure the user provided
       if (config.structuredCriteria) {
           finalCriteria = config.structuredCriteria.map((input, idx) => {
               const aiItem = json.criteriaBreakdown?.[idx] || json.criteriaBreakdown?.find((item: any) => item.name === input.name);
@@ -259,7 +259,7 @@ export class GeminiService {
                   name: input.name,
                   maxPoints: input.maxPoints,
                   score: aiItem ? Math.min(aiItem.score, input.maxPoints) : 0,
-                  comment: aiItem?.comment || "Criterion not satisfied or not attempted during the conversation."
+                  comment: aiItem?.comment || "Criterion was not demonstrated during the call."
               };
           });
       } else {
@@ -269,36 +269,13 @@ export class GeminiService {
       return {
         agentName: config.agentName,
         totalScore: json.totalScore || 0,
-        summary: json.summary || "No executive summary provided.",
+        summary: json.summary || "No executive summary available.",
         criteriaBreakdown: finalCriteria,
         transcription: this.transcriptionHistory
       };
     } catch (e) {
-      console.error("Eval Error:", e);
-      return { agentName: config.agentName, totalScore: 0, summary: "Technical error during evaluation generation.", criteriaBreakdown: [], transcription: this.transcriptionHistory };
+      return { agentName: config.agentName, totalScore: 0, summary: "Error generating evaluation.", criteriaBreakdown: [], transcription: this.transcriptionHistory };
     }
-  }
-
-  async analyzeReferenceCalls(files: File[]): Promise<string> {
-    const parts: any[] = [{ text: "Extract a customer behavioral profile and persona from these audio samples for a roleplay simulation." }];
-    for (const f of files) parts.push({ inlineData: { mimeType: f.type || 'audio/mp3', data: await fileToBase64(f) } });
-    const res = await this.ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: { parts } });
-    return res.text || "";
-  }
-
-  async analyzePersonaFromUrls(urls: string[]): Promise<string> {
-    const parts: any[] = [{ text: "Extract simulation profile from audio urls." }];
-    for (const u of urls) parts.push({ inlineData: { mimeType: 'audio/mp3', data: await fetchAudioAsBase64(u) } });
-    const res = await this.ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: { parts } });
-    return res.text || "";
-  }
-
-  async analyzePersonaFromText(transcript: string): Promise<string> {
-     const res = await this.ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Extract customer behavior profile and pain points from these transcripts to use for roleplay training:\n${transcript}`,
-      });
-      return res.text || "";
   }
 
   async sendChatMessage(model: string, history: any[], message: string): Promise<string> {

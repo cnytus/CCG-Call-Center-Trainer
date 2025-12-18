@@ -26,6 +26,16 @@ export interface ExternalCriterion {
   description?: string;
 }
 
+export interface CallScenarioPreset {
+  id: string;
+  title: string;
+  description: string;
+  client: string;
+  context: string;
+  criteria: ExternalCriterion[];
+  icon: string;
+}
+
 export interface SimulationConfig {
   agentName: string;
   scenario: string;
@@ -35,7 +45,6 @@ export interface SimulationConfig {
   difficulty: Difficulty;
   customContext: string; 
   evaluationCriteria: string;
-  // Added to store the raw object array for strict evaluation matching
   structuredCriteria?: ExternalCriterion[];
 }
 
@@ -60,6 +69,5 @@ export interface CallCenterTrainerProps {
   externalCriteria?: ExternalCriterion[];
   externalClientName?: string;
   externalScenario?: string;
-  // Callback to return data to parent application
   onSessionComplete?: (result: EvaluationResult) => void;
 }
