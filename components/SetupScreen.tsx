@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Difficulty, Language, SimulationConfig, ExternalCriterion, CallScenarioPreset } from '../types';
-import { TRAINING_PRESETS } from '../data/presets';
 import { DPD_STANDARD_INBOUND_CRITERIA } from '../data/dpd_criteria';
 
 interface Props {
@@ -13,6 +12,7 @@ interface Props {
   externalClientName?: string;
   externalScenario?: string;
   onRunMock?: () => void;
+  availableScenarios: CallScenarioPreset[];
 }
 
 const SetupScreen: React.FC<Props> = ({ 
@@ -23,7 +23,8 @@ const SetupScreen: React.FC<Props> = ({
   externalCriteria,
   externalClientName = 'DPD',
   externalScenario = '',
-  onRunMock
+  onRunMock,
+  availableScenarios
 }) => {
   const [agentName, setAgentName] = useState(initialAgentName);
   const [language, setLanguage] = useState<Language>(Language.ENGLISH);
@@ -47,21 +48,33 @@ const SetupScreen: React.FC<Props> = ({
   // Auto-select preset if externalScenario matches "scenario 1", "scenario 2", etc.
   useEffect(() => {
     if (externalScenario && externalScenario.toLowerCase().startsWith('scenario')) {
-      const preset = TRAINING_PRESETS.find(p => p.id === externalScenario.toLowerCase());
+      const preset = availableScenarios.find(p => p.id === externalScenario.toLowerCase());
       if (preset) {
         setSelectedPresetId(preset.id);
       }
     } else if (externalCriteria && externalCriteria.length > 0) {
       setSelectedPresetId('external');
     }
-  }, [externalScenario, externalCriteria]);
+  }, [externalScenario, externalCriteria, availableScenarios]);
 
-  // If Client is DPD and Project is Standard, default to German
+  // Sync client/project/calltype and LANGUAGE when a scenario is clicked
   useEffect(() => {
-    if (client === 'DPD' && project === 'Standart') {
+    const preset = availableScenarios.find(p => p.id === selectedPresetId);
+    if (preset) {
+      setClient(preset.client || 'DPD');
+      if (preset.language) {
+        setLanguage(preset.language);
+      }
+    }
+  }, [selectedPresetId, availableScenarios]);
+
+  // If Client is DPD and Project is Standard, default to German (override if not explicitly a custom preset language)
+  useEffect(() => {
+    const preset = availableScenarios.find(p => p.id === selectedPresetId);
+    if (!preset?.language && client === 'DPD' && project === 'Standart') {
       setLanguage(Language.GERMAN);
     }
-  }, [client, project]);
+  }, [client, project, selectedPresetId, availableScenarios]);
 
   useEffect(() => {
     if (workbook && !externalCriteria) {
@@ -89,7 +102,7 @@ const SetupScreen: React.FC<Props> = ({
 
     let config: SimulationConfig;
 
-    const preset = TRAINING_PRESETS.find(p => p.id === selectedPresetId);
+    const preset = availableScenarios.find(p => p.id === selectedPresetId);
     
     // Check if we should override with the official DPD criteria from CSV
     const isDpdStandardInbound = client === 'DPD' && callType === 'Inbound' && project === 'Standart';
@@ -137,7 +150,6 @@ const SetupScreen: React.FC<Props> = ({
         evaluationCriteria: csv,
       };
     } else if (isDpdStandardInbound) {
-      // Automatic fallback if DPD Standard is selected but no specific preset clicked
       config = {
         agentName: agentName.trim(),
         scenario: 'DPD Standard Inbound (Auto-Generated)',
@@ -165,7 +177,6 @@ const SetupScreen: React.FC<Props> = ({
       </h1>
       
       <form onSubmit={handleSubmit} className="space-y-8">
-        {/* Trainee Info & Core Config */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700">
             <label className="block text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Trainee Identity</label>
@@ -219,11 +230,10 @@ const SetupScreen: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Official Presets */}
         <div>
-          <label className="block text-sm font-medium text-slate-400 mb-4 uppercase tracking-wider">Select Official Training Scenario</label>
+          <label className="block text-sm font-medium text-slate-400 mb-4 uppercase tracking-wider">Select Training Scenario</label>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {TRAINING_PRESETS.map((p) => (
+            {availableScenarios.map((p) => (
               <div 
                 key={p.id}
                 onClick={() => setSelectedPresetId(p.id)}
@@ -233,20 +243,30 @@ const SetupScreen: React.FC<Props> = ({
                   : 'bg-slate-900/50 border-slate-700 hover:border-slate-500'
                 }`}
               >
-                <div className="text-3xl mb-3">{p.icon}</div>
+                <div className="flex justify-between items-start mb-3">
+                  <div className="text-3xl">{p.icon}</div>
+                  {p.id.startsWith('custom-') && (
+                    <span className="text-[8px] bg-purple-600 px-1.5 py-0.5 rounded text-white font-bold uppercase">Custom</span>
+                  )}
+                </div>
                 <h3 className="font-bold text-white mb-1">{p.title}</h3>
-                <p className="text-xs text-slate-400 mb-4 flex-1">{p.description}</p>
-                <div className="text-[10px] text-blue-400 font-mono bg-blue-900/30 px-2 py-1 rounded inline-block">
-                  {p.id.toUpperCase()}
+                <p className="text-xs text-slate-400 mb-2 flex-1 line-clamp-2">{p.description}</p>
+                <div className="flex justify-between items-center mt-auto">
+                   <div className="text-[9px] text-blue-400 font-mono bg-blue-900/30 px-2 py-1 rounded">
+                     {p.client} &bull; {p.id.split('-')[0].toUpperCase()}
+                   </div>
+                   {p.language && (
+                     <div className="text-[9px] text-slate-500 font-bold uppercase bg-slate-900 px-2 py-1 rounded">
+                       {p.language}
+                     </div>
+                   )}
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Other Options Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-700/50">
-          {/* File Upload Mode */}
           <div 
             onClick={() => !workbook && fileInputRef.current?.click()}
             className={`p-6 rounded-xl border transition-all ${
@@ -279,7 +299,6 @@ const SetupScreen: React.FC<Props> = ({
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} accept=".xlsx,.xls" />
           </div>
 
-          {/* Global Configs */}
           <div className="space-y-4">
              <div className="grid grid-cols-2 gap-4">
                 <div>

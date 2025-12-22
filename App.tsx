@@ -1,14 +1,15 @@
-
 import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
 import SetupScreen from './components/SetupScreen';
 import LiveCall from './components/LiveCall';
 import FeedbackReport from './components/FeedbackReport';
 import ChatWidget from './components/ChatWidget';
-import { SimulationConfig, EvaluationResult, CallCenterTrainerProps } from './types';
+import ScenarioBuilder from './components/ScenarioBuilder';
+import { SimulationConfig, EvaluationResult, CallCenterTrainerProps, CallScenarioPreset } from './types';
 import { geminiService } from './services/geminiService';
+import { TRAINING_PRESETS } from './data/presets';
 
-type AppState = 'SETUP' | 'CALL' | 'GENERATING_REPORT' | 'REPORT';
+type AppState = 'SETUP' | 'CALL' | 'GENERATING_REPORT' | 'REPORT' | 'BUILDER';
 
 export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
   initialAgentName = '',
@@ -20,6 +21,7 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
   const [appState, setAppState] = useState<AppState>('SETUP');
   const [config, setConfig] = useState<SimulationConfig | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
+  const [customScenarios, setCustomScenarios] = useState<CallScenarioPreset[]>([]);
   
   // Persist the workbook across sessions (only used if no external criteria provided)
   const [cachedWorkbook, setCachedWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -29,8 +31,12 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
     setAppState('CALL');
   };
 
+  const handleSaveScenario = (scenario: CallScenarioPreset) => {
+    setCustomScenarios(prev => [scenario, ...prev]);
+    setAppState('SETUP');
+  };
+
   const handleMockTest = () => {
-      // Fix: Added missing required property 'improvementSuggestions' to match the EvaluationResult interface.
       const mockResult: EvaluationResult = {
           agentName: initialAgentName || "Test Agent",
           totalScore: 85,
@@ -67,24 +73,19 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
 
   const handleEndCall = async () => {
     setAppState('GENERATING_REPORT');
-    // Disconnect call first
     await geminiService.disconnect();
     
-    // Generate report
     if (config) {
       try {
         const evalResult = await geminiService.generateEvaluation(config);
         setResult(evalResult);
         setAppState('REPORT');
         
-        // Return data to parent application if callback exists
         if (onSessionComplete) {
             onSessionComplete(evalResult);
         }
-
       } catch (e) {
         console.error("Failed to generate report", e);
-        // Reset to setup on critical error
         alert("Failed to generate evaluation report. Check console.");
         setAppState('SETUP');
       }
@@ -99,21 +100,19 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
 
   const handleSaveCorrection = (correctedResult: EvaluationResult) => {
     if (result) {
-        // Send both the original AI result and the human corrected one
         geminiService.submitCorrection(result, correctedResult);
-        // Update local state so UI reflects "saved"
         setResult(correctedResult);
-        
-        // Also send corrected result back to parent app
         if (onSessionComplete) {
             onSessionComplete(correctedResult);
         }
     }
   };
 
+  // Merge official and custom scenarios
+  const allScenarios = [...customScenarios, ...TRAINING_PRESETS];
+
   return (
     <div className="w-full min-h-screen bg-[#0f172a] text-slate-100 font-sans selection:bg-blue-500/30 flex flex-col relative">
-      {/* Header */}
       <header className="sticky top-0 w-full z-10 border-b border-slate-800 bg-[#0f172a]/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -122,16 +121,29 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
              </div>
              <span className="font-semibold text-lg tracking-tight text-slate-200">Call Center Trainer</span>
           </div>
-          {config && appState !== 'SETUP' && (
-             <div className="text-sm text-slate-400">
-               {config.agentName} &bull; {config.scenario}
-             </div>
-          )}
+          <div className="flex items-center gap-4">
+            {appState === 'SETUP' && (
+              <button 
+                onClick={() => setAppState('BUILDER')}
+                className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 transition"
+              >
+                Manager Portal: Build Scenario
+              </button>
+            )}
+            {config && appState !== 'SETUP' && (
+               <div className="text-sm text-slate-400">
+                 {config.agentName} &bull; {config.scenario}
+               </div>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-6 py-8">
+        {appState === 'BUILDER' && (
+          <ScenarioBuilder onSave={handleSaveScenario} onCancel={() => setAppState('SETUP')} />
+        )}
+
         {appState === 'SETUP' && (
           <SetupScreen 
             onStart={handleStart} 
@@ -142,6 +154,7 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
             externalClientName={externalClientName}
             externalScenario={externalScenario}
             onRunMock={handleMockTest}
+            availableScenarios={allScenarios}
           />
         )}
         
@@ -171,7 +184,6 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
         )}
       </main>
       
-      {/* AI Supervisor Chat Widget */}
       <ChatWidget />
     </div>
   );

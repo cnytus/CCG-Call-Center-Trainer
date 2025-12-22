@@ -25,31 +25,28 @@ export class GeminiService {
   }
 
   private getSystemInstruction(config: SimulationConfig): string {
-    const isCargoFallback = !config.scenario || 
-                             config.scenario.toLowerCase().includes('cargo') || 
-                             config.scenario.toLowerCase().includes('logistics') ||
-                             config.scenario === 'General Inquiry';
-    
     return `
-      ROLE: You are EXCLUSIVELY a CUSTOMER calling ${config.clientName} support.
+      ROLE: You are EXCLUSIVELY the CUSTOMER calling ${config.clientName} support. 
       
-      STRICT CHARACTER RULES:
-      1. YOU ARE THE CUSTOMER: Never act as an agent, trainer, or assistant.
-      2. AUDIO ONLY: You communicate ONLY via spoken voice.
-      3. NO TEXT SUMMARIES: Do not provide a text summary of your speech. Do not describe your own actions in text.
-      4. NO INLINE FEEDBACK: Do not tell the agent they are doing well or poorly during the call. Stay in your role even if they make mistakes.
-      5. NO NARRATION: Do not say things like "The customer looks at his watch" or "The customer sounds angry". Just BE the customer.
+      STRICT OPERATIONAL RULES:
+      1. NEVER ACT AS THE AGENT: You are the person calling with a problem or inquiry.
+      2. LISTEN BEFORE TALKING: Allow the agent to finish their sentence. Wait for a natural pause before responding. Do not interrupt unless extremely frustrated.
+      3. NO NARRATION: Never provide text descriptions of your actions (e.g., *Sighs* or "Customer said...").
+      4. NO INLINE SUMMARIES: Never summarize what you just said. Just speak your dialogue.
+      5. NO META-TALK: Never discuss the training or evaluation during the call. Stay in character 100%.
+      6. LANGUAGE: Speak ONLY in ${config.language}.
       
-      SCENARIO DETAILS:
+      SCENARIO CONTEXT:
       - Client: ${config.clientName}
       - Project: ${config.project}
       - Call Type: ${config.callType}
-      - Language: ${config.language} (STRICT: All your speech must be in this language).
+      - Difficulty: ${config.difficulty}
       - Context: ${config.customContext || config.scenario}
       
-      Your goal is to have your issue resolved. If the agent is helpful, proceed to a solution. If they are incompetent or rude (based on difficulty: ${config.difficulty}), express frustration naturally.
+      BEHAVIOR:
+      Act like a real human. If the agent is helpful, be cooperative. If the agent is rude or fails to follow protocol (based on ${config.difficulty}), respond with appropriate human emotion.
       
-      Begin the interaction now as the CUSTOMER.
+      Begin the call now as the CUSTOMER.
     `;
   }
 
@@ -121,6 +118,12 @@ export class GeminiService {
             };
             updateVisualizer();
           }
+
+          if (message.serverContent?.interrupted) {
+            this.sources.forEach(s => { try { s.stop(); } catch(e){} });
+            this.sources.clear();
+            this.nextStartTime = 0;
+          }
         },
         onclose: () => onDisconnect(),
         onerror: (e) => { console.error("Live API Error:", e); onDisconnect(); }
@@ -137,12 +140,9 @@ export class GeminiService {
   }
 
   async disconnect() {
-    // Final flush of transcription
     if (this.currentInputTranscription.trim()) this.transcriptionHistory.push({ role: 'user', text: this.currentInputTranscription.trim() });
     if (this.currentOutputTranscription.trim()) this.transcriptionHistory.push({ role: 'model', text: this.currentOutputTranscription.trim() });
-    this.currentInputTranscription = '';
-    this.currentOutputTranscription = '';
-
+    
     if (this.session) {
       try { this.session.close(); } catch (e) {}
     }
@@ -153,45 +153,37 @@ export class GeminiService {
   }
 
   async generateEvaluation(config: SimulationConfig): Promise<EvaluationResult> {
-    const transcriptText = this.transcriptionHistory.length > 0 
-      ? this.transcriptionHistory.map(t => `${t.role === 'user' ? 'AGENT' : 'CUSTOMER'}: ${t.text}`).join('\n')
-      : "No conversation occurred.";
+    const transcriptText = this.transcriptionHistory
+      .map(t => `${t.role === 'user' ? 'AGENT' : 'CUSTOMER'}: ${t.text}`)
+      .join('\n');
 
     const prompt = `
-      PERSONA: Senior Call Center Quality Assurance and Training Manager.
-      CLIENT: ${config.clientName}
-      PROJECT: ${config.project}
-      CALL TYPE: ${config.callType}
-
-      TASK: Perform a detailed audit of the provided call transcript. 
-      You must evaluate the AGENT's performance based strictly on the EVALUATION CRITERIA below.
-
+      PERSONA: Expert Call Center QA Manager for ${config.clientName}.
+      TASK: Evaluate the Agent's performance based on the transcript below and the defined criteria.
+      
       EVALUATION CRITERIA:
-      ${config.structuredCriteria?.map(c => `- ${c.name} (Max Points: ${c.maxPoints}): ${c.description}`).join('\n') || config.evaluationCriteria}
+      ${config.structuredCriteria?.map(c => `- ${c.name} (Max ${c.maxPoints}): ${c.description}`).join('\n') || config.evaluationCriteria}
 
-      TRANSCRIPT TO AUDIT:
-      ${transcriptText}
+      TRANSCRIPT:
+      ${transcriptText || "No audible conversation recorded."}
 
-      OUTPUT REQUIREMENTS:
-      1. CALL_SUMMARY: A professional 2-3 sentence overview of the customer's request and the agent's resolution.
-      2. MANAGER_FEEDBACK: A summary of the agent's soft skills and technical accuracy.
-      3. IMPROVEMENT_SUGGESTIONS: 3-5 high-impact coaching points for the agent's professional development.
-      4. CRITERIA_SCORING: A numerical score for EACH criterion listed above. You must justify every point deduction in the comment field.
+      REQUIRED OUTPUT FIELDS (JSON):
+      1. callSummary: A brief 2-sentence summary of the interaction.
+      2. summary: Overall summary of the agent's performance and tone.
+      3. improvementSuggestions: List of 3-5 actionable coaching tips.
+      4. totalScore: A percentage (0-100) based on weighted criteria.
+      5. criteriaBreakdown: Detailed list of each criterion with earned score and specific feedback comment.
 
-      Return the result in JSON format only.
+      Ensure your feedback is professional and constructive.
     `;
 
     const schema: Schema = {
       type: Type.OBJECT,
       properties: {
-        totalScore: { type: Type.NUMBER, description: "Normalized total score percentage (0-100)." },
-        summary: { type: Type.STRING, description: "Professional manager feedback." },
-        callSummary: { type: Type.STRING, description: "Brief summary of the call context." },
-        improvementSuggestions: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-          description: "Specific actionable coaching points."
-        },
+        totalScore: { type: Type.NUMBER },
+        summary: { type: Type.STRING },
+        callSummary: { type: Type.STRING },
+        improvementSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
         criteriaBreakdown: {
           type: Type.ARRAY,
           items: {
@@ -213,46 +205,32 @@ export class GeminiService {
       const response = await this.ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
-        config: { 
-          responseMimeType: 'application/json', 
-          responseSchema: schema
-        }
+        config: { responseMimeType: 'application/json', responseSchema: schema }
       });
 
-      const json = JSON.parse(response.text || '{}');
-      
+      const data = JSON.parse(response.text || '{}');
       return {
         agentName: config.agentName,
-        totalScore: json.totalScore || 0,
-        summary: json.summary || "Evaluation completed.",
-        callSummary: json.callSummary || "Interaction documented.",
-        improvementSuggestions: json.improvementSuggestions || [],
-        criteriaBreakdown: json.criteriaBreakdown || [],
+        ...data,
         transcription: [...this.transcriptionHistory]
       };
     } catch (e) {
-      console.error("Evaluation Error:", e);
-      // Fallback result so the UI still displays the transcript at minimum
+      console.error("Evaluation generation failed:", e);
       return {
         agentName: config.agentName,
         totalScore: 0,
-        summary: "An error occurred during automated evaluation. Please review the transcript manually.",
-        callSummary: "System error during evaluation processing.",
-        improvementSuggestions: ["Review the manual transcript for coaching opportunities."],
-        criteriaBreakdown: config.structuredCriteria?.map(c => ({
-          name: c.name,
-          score: 0,
-          maxPoints: c.maxPoints,
-          comment: "Error: Manual review required."
-        })) || [],
-        transcription: [...this.transcriptionHistory]
+        summary: "Error generating automated evaluation. Please review transcript manually.",
+        callSummary: "Interaction summary unavailable.",
+        improvementSuggestions: ["Check system logs for evaluation errors."],
+        criteriaBreakdown: [],
+        transcription: this.transcriptionHistory
       };
     }
   }
 
   async submitCorrection(original: EvaluationResult, corrected: EvaluationResult): Promise<void> {
-    console.log("Human feedback saved.");
-    await new Promise(resolve => setTimeout(resolve, 200));
+    console.log("Saving human correction to training set...");
+    // In a real app, this would be an API call to store data for fine-tuning
   }
 
   async sendChatMessage(model: string, history: any[], message: string): Promise<string> {

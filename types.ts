@@ -40,6 +40,7 @@ export interface CallScenarioPreset {
   context: string;
   criteria: ExternalCriterion[];
   icon: string;
+  language?: Language;
 }
 
 export interface SimulationConfig {
