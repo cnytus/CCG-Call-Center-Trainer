@@ -26,33 +26,35 @@ export class GeminiService {
 
   private getSystemInstruction(config: SimulationConfig): string {
     return `
-      ROLE: You are EXCLUSIVELY the CUSTOMER calling ${config.clientName} support. 
+      LANGUAGE: Speak EXCLUSIVELY in ${config.language}. Do not use any other language.
       
-      STRICT OPERATIONAL RULES:
-      1. NEVER ACT AS THE AGENT: You are the person calling with a problem or inquiry.
-      2. LISTEN BEFORE TALKING: Allow the agent to finish their sentence. Wait for a natural pause before responding. Do not interrupt unless extremely frustrated.
-      3. NO NARRATION: Never provide text descriptions of your actions (e.g., *Sighs* or "Customer said...").
-      4. NO INLINE SUMMARIES: Never summarize what you just said. Just speak your dialogue.
-      5. NO META-TALK: Never discuss the training or evaluation during the call. Stay in character 100%.
-      6. LANGUAGE: Speak ONLY in ${config.language}.
+      ROLE: You are the CUSTOMER calling ${config.clientName} support. 
+      You are participating in a roleplay for the project: ${config.project} (${config.callType}).
       
-      SCENARIO CONTEXT:
-      - Client: ${config.clientName}
-      - Project: ${config.project}
-      - Call Type: ${config.callType}
-      - Difficulty: ${config.difficulty}
-      - Context: ${config.customContext || config.scenario}
+      SCENARIO CONTEXT (YOUR IDENTITY & PROBLEM):
+      ${config.customContext || config.scenario}
       
-      BEHAVIOR:
-      Act like a real human. If the agent is helpful, be cooperative. If the agent is rude or fails to follow protocol (based on ${config.difficulty}), respond with appropriate human emotion.
+      STRICT ROLEPLAY RULES:
+      1. ONLY CUSTOMER: You are ONLY the customer. Never act as the agent.
+      2. STAY IN CONTEXT: Do not invent details outside the provided context unless necessary for a natural conversation (e.g., a phone number if asked).
+      3. BEHAVIOR: Your difficulty level is ${config.difficulty}. 
+         - If Easy: Be patient and cooperative.
+         - If Medium: Be a standard customer.
+         - If Hard: Be frustrated, rushed, or skeptical.
+      4. NO NARRATION: Never use asterisks or text descriptions (e.g., *sighs*). Communicate only through speech.
+      5. TURN-TAKING: Listen to the agent. Wait for them to finish their sentences. Do not speak over them.
+      6. NO META-TALK: Never mention that this is a training, a test, or an AI simulation.
       
-      Begin the call now as the CUSTOMER.
+      The call starts now. Greet the agent in ${config.language} and state your reason for calling based on the context.
     `;
   }
 
   async connect(config: SimulationConfig, onAudioData: (frequencyData: Uint8Array) => void, onDisconnect: () => void): Promise<void> {
     this.transcriptionHistory = [];
     this.nextStartTime = 0;
+    this.currentInputTranscription = '';
+    this.currentOutputTranscription = '';
+    
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
     this.inputAudioContext = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE });
     this.outputAudioContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
@@ -157,24 +159,28 @@ export class GeminiService {
       .map(t => `${t.role === 'user' ? 'AGENT' : 'CUSTOMER'}: ${t.text}`)
       .join('\n');
 
+    const criteriaString = config.structuredCriteria 
+      ? config.structuredCriteria.map(c => `- ${c.name} (Max ${c.maxPoints}): ${c.description || 'No description'}`).join('\n')
+      : config.evaluationCriteria;
+
     const prompt = `
-      PERSONA: Expert Call Center QA Manager for ${config.clientName}.
-      TASK: Evaluate the Agent's performance based on the transcript below and the defined criteria.
+      PERSONA: You are a Senior QA Performance Manager for ${config.clientName}.
+      TASK: Evaluate the Agent's performance on a training call using the EXACT criteria provided.
       
       EVALUATION CRITERIA:
-      ${config.structuredCriteria?.map(c => `- ${c.name} (Max ${c.maxPoints}): ${c.description}`).join('\n') || config.evaluationCriteria}
+      ${criteriaString}
 
       TRANSCRIPT:
       ${transcriptText || "No audible conversation recorded."}
 
-      REQUIRED OUTPUT FIELDS (JSON):
-      1. callSummary: A brief 2-sentence summary of the interaction.
-      2. summary: Overall summary of the agent's performance and tone.
-      3. improvementSuggestions: List of 3-5 actionable coaching tips.
-      4. totalScore: A percentage (0-100) based on weighted criteria.
-      5. criteriaBreakdown: Detailed list of each criterion with earned score and specific feedback comment.
+      INSTRUCTIONS:
+      - Assign a score for each criterion based on the transcript.
+      - Provide a specific comment explaining why that score was given.
+      - Calculate a total percentage score.
+      - Provide professional, manager-level feedback for the agent's growth.
+      - Write all feedback in ${config.language}.
 
-      Ensure your feedback is professional and constructive.
+      OUTPUT FORMAT: JSON only.
     `;
 
     const schema: Schema = {
@@ -230,7 +236,7 @@ export class GeminiService {
 
   async submitCorrection(original: EvaluationResult, corrected: EvaluationResult): Promise<void> {
     console.log("Saving human correction to training set...");
-    // In a real app, this would be an API call to store data for fine-tuning
+    // Future integration point for fine-tuning or historical storage
   }
 
   async sendChatMessage(model: string, history: any[], message: string): Promise<string> {
