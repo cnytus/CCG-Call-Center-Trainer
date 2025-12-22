@@ -10,7 +10,13 @@ export enum Language {
   GERMAN = 'German',
   TURKISH = 'Turkish',
   SPANISH = 'Spanish',
-  FRENCH = 'French'
+  FRENCH = 'French',
+  ITALIAN = 'Italian',
+  DUTCH = 'Dutch',
+  PORTUGUESE = 'Portuguese',
+  RUSSIAN = 'Russian',
+  JAPANESE = 'Japanese',
+  CHINESE = 'Chinese'
 }
 
 export enum Difficulty {
@@ -39,8 +45,9 @@ export interface CallScenarioPreset {
 export interface SimulationConfig {
   agentName: string;
   scenario: string;
-  clientName?: string;
-  callType?: string;
+  clientName: string;
+  callType: string;
+  project: string;
   language: Language;
   difficulty: Difficulty;
   customContext: string; 
@@ -60,6 +67,8 @@ export interface EvaluationResult {
   agentName: string;
   totalScore: number;
   summary: string;
+  callSummary?: string;
+  improvementSuggestions: string[]; // New field for QA Manager advice
   criteriaBreakdown: CriterionEvaluation[];
   transcription: Array<{ role: 'user' | 'model'; text: string }>;
 }

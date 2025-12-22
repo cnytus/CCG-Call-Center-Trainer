@@ -1,6 +1,23 @@
 import { CallScenarioPreset } from '../types';
+import { DPD_STANDARD_INBOUND_CRITERIA } from './dpd_criteria';
 
 export const TRAINING_PRESETS: CallScenarioPreset[] = [
+  {
+    id: 'scenario-dpd-standard',
+    title: 'DPD Standard: Status & Pickup',
+    client: 'DPD',
+    description: 'Official DPD Inbound training based on real transcripts (Status inquiries and Pickup issues).',
+    icon: '📦',
+    context: `
+      CUSTOMER PERSONA: Can be one of the following based on random choice:
+      1. Frau Gärtner: Inquiry about a "Verladefehler" (loading error) for packet 0132... Oldenburg.
+      2. M Textilservice: Inquiry about two packets delayed in a "Verteilerdepot" (distribution center).
+      3. Herr Schafte (Tamascha, Hamburg): Complaint about a missed pickup. Very frustrated as it happened twice last week.
+      
+      BEHAVIOR: You are a regular business or private customer. You expect professional handling, address verification, and clear solutions.
+    `,
+    criteria: DPD_STANDARD_INBOUND_CRITERIA
+  },
   {
     id: 'scenario 1',
     title: 'Billing & Overcharge Dispute',
@@ -81,6 +98,26 @@ export const TRAINING_PRESETS: CallScenarioPreset[] = [
       { id: 's4-2', name: 'Product Knowledge', maxPoints: 20, description: 'Explained weight/dimension limits or customs basics.' },
       { id: 's4-3', name: 'Customer Service Skills', maxPoints: 20, description: 'Maintained a helpful and professional tone.' },
       { id: 's4-4', name: 'Follow-up / Call Wrap', maxPoints: 30, description: 'Confirmed tracking number or sent quote email.' }
+    ]
+  },
+  {
+    id: 'scenario 5',
+    title: 'Urgent Cargo Pickup Arrangement',
+    client: 'Titan Logistics',
+    description: 'A customer needs to arrange an immediate pickup for high-value machinery parts.',
+    icon: '🏗️',
+    context: `
+      CUSTOMER PERSONA: Mr. Henderson from 'Tech Parts Inc'.
+      PICKUP ADDRESS: 124 Industrial Way, Block B, Warehouse 4.
+      PACKAGE DETAILS: 5 large crates, total weight approximately 450kg.
+      REQUIREMENT: Must be picked up by 4:00 PM today for overnight shipping.
+      BEHAVIOR: You are professional but very firm on the deadline. You specifically need confirmation that the truck will have a lift gate because you don't have a loading dock at this site.
+    `,
+    criteria: [
+      { id: 's5-1', name: 'Logistics Accuracy', maxPoints: 25, description: 'Verified address and confirmed package dimensions/weight.' },
+      { id: 's5-2', name: 'Special Equipment Handling', maxPoints: 25, description: 'Identified and confirmed the need for a lift gate.' },
+      { id: 's5-3', name: 'Deadline Commitment', maxPoints: 25, description: 'Clearly addressed the 4:00 PM deadline and confirmed feasibility.' },
+      { id: 's5-4', name: 'Tone & Professionalism', maxPoints: 25, description: 'Maintained authority while being helpful to a stressed customer.' }
     ]
   }
 ];

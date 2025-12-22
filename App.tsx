@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
 import SetupScreen from './components/SetupScreen';
@@ -29,10 +30,17 @@ export const CallCenterTrainer: React.FC<CallCenterTrainerProps> = ({
   };
 
   const handleMockTest = () => {
+      // Fix: Added missing required property 'improvementSuggestions' to match the EvaluationResult interface.
       const mockResult: EvaluationResult = {
           agentName: initialAgentName || "Test Agent",
           totalScore: 85,
           summary: "MOCK EVALUATION: The agent followed standard procedures correctly. Verification was successful. The tone was professional throughout the call.",
+          callSummary: "A standard mock inquiry regarding an invoice.",
+          improvementSuggestions: [
+              "Maintain consistent use of the customer's name.",
+              "Confirm identity before discussing account specifics.",
+              "Summarize the next steps clearly before hanging up."
+          ],
           criteriaBreakdown: externalCriteria ? externalCriteria.map((c, i) => ({
               id: c.id || String(i),
               name: c.name,

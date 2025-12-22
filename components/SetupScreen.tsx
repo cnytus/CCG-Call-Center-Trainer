@@ -1,9 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Difficulty, Language, SimulationConfig, ExternalCriterion, CallScenarioPreset } from '../types';
-import { geminiService } from '../services/geminiService';
-import { DPD_REAL_CALLS } from '../data/dpd_transcripts';
 import { TRAINING_PRESETS } from '../data/presets';
+import { DPD_STANDARD_INBOUND_CRITERIA } from '../data/dpd_criteria';
 
 interface Props {
   onStart: (config: SimulationConfig) => void;
@@ -22,7 +21,7 @@ const SetupScreen: React.FC<Props> = ({
   onWorkbookUpload,
   initialAgentName = '',
   externalCriteria,
-  externalClientName = 'External Client',
+  externalClientName = 'DPD',
   externalScenario = '',
   onRunMock
 }) => {
@@ -33,10 +32,15 @@ const SetupScreen: React.FC<Props> = ({
   // Selection state
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
   
+  // Simulation Context
+  const [client, setClient] = useState<string>(externalClientName || 'DPD');
+  const [callType, setCallType] = useState<string>('Inbound');
+  const [project, setProject] = useState<string>('Standart');
+
   // Custom File State
   const [availableSheets, setAvailableSheets] = useState<any[]>([]);
-  const [selectedClient, setSelectedClient] = useState<string>('');
-  const [selectedCallType, setSelectedCallType] = useState<string>('');
+  const [selectedClientFile, setSelectedClientFile] = useState<string>('');
+  const [selectedCallTypeFile, setSelectedCallTypeFile] = useState<string>('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +56,13 @@ const SetupScreen: React.FC<Props> = ({
     }
   }, [externalScenario, externalCriteria]);
 
+  // If Client is DPD and Project is Standard, default to German
+  useEffect(() => {
+    if (client === 'DPD' && project === 'Standart') {
+      setLanguage(Language.GERMAN);
+    }
+  }, [client, project]);
+
   useEffect(() => {
     if (workbook && !externalCriteria) {
       const parsed = workbook.SheetNames.map(name => {
@@ -59,7 +70,7 @@ const SetupScreen: React.FC<Props> = ({
         return { sheetName: name, client: parts[0], callType: parts.slice(1).join(' ') || 'General' };
       });
       setAvailableSheets(parsed);
-      if (parsed.length > 0) setSelectedClient(parsed[0].client);
+      if (parsed.length > 0) setSelectedClientFile(parsed[0].client);
     }
   }, [workbook, externalCriteria]);
 
@@ -80,22 +91,31 @@ const SetupScreen: React.FC<Props> = ({
 
     const preset = TRAINING_PRESETS.find(p => p.id === selectedPresetId);
     
+    // Check if we should override with the official DPD criteria from CSV
+    const isDpdStandardInbound = client === 'DPD' && callType === 'Inbound' && project === 'Standart';
+
     if (preset) {
       config = {
         agentName: agentName.trim(),
         scenario: preset.title,
-        clientName: preset.client,
+        clientName: client,
+        callType: callType,
+        project: project,
         language,
         difficulty,
         customContext: preset.context,
-        evaluationCriteria: preset.criteria.map(c => `${c.name} (${c.maxPoints}pts)`).join('\n'),
-        structuredCriteria: preset.criteria
+        evaluationCriteria: isDpdStandardInbound 
+          ? DPD_STANDARD_INBOUND_CRITERIA.map(c => `${c.name} (${c.maxPoints}pts)`).join('\n')
+          : preset.criteria.map(c => `${c.name} (${c.maxPoints}pts)`).join('\n'),
+        structuredCriteria: isDpdStandardInbound ? DPD_STANDARD_INBOUND_CRITERIA : preset.criteria
       };
     } else if (selectedPresetId === 'external' && externalCriteria) {
       config = {
         agentName: agentName.trim(),
         scenario: externalScenario || 'External Assessment',
-        clientName: externalClientName,
+        clientName: client,
+        callType: callType,
+        project: project,
         language,
         difficulty,
         customContext: `EXTERNAL QA MODE: ${externalScenario}`,
@@ -103,16 +123,32 @@ const SetupScreen: React.FC<Props> = ({
         structuredCriteria: externalCriteria
       };
     } else if (selectedPresetId === 'custom-file' && workbook) {
-      const sheet = availableSheets.find(s => s.client === selectedClient && s.callType === selectedCallType);
-      const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheet.sheetName]);
+      const sheet = availableSheets.find(s => s.client === selectedClientFile && s.callType === selectedCallTypeFile);
+      const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheet?.sheetName || workbook.SheetNames[0]]);
       config = {
         agentName: agentName.trim(),
-        scenario: `${sheet.client} - ${sheet.callType}`,
-        clientName: sheet.client,
+        scenario: sheet ? `${sheet.client} - ${sheet.callType}` : 'Custom File Upload',
+        clientName: client,
+        callType: callType,
+        project: project,
         language,
         difficulty,
-        customContext: `Excel Upload: ${sheet.sheetName}`,
+        customContext: `Excel Upload: ${sheet?.sheetName || 'Active Sheet'}`,
         evaluationCriteria: csv,
+      };
+    } else if (isDpdStandardInbound) {
+      // Automatic fallback if DPD Standard is selected but no specific preset clicked
+      config = {
+        agentName: agentName.trim(),
+        scenario: 'DPD Standard Inbound (Auto-Generated)',
+        clientName: client,
+        callType: callType,
+        project: project,
+        language,
+        difficulty,
+        customContext: 'DPD General Customer Inquiry (e.g., missed pickup or packet status).',
+        evaluationCriteria: DPD_STANDARD_INBOUND_CRITERIA.map(c => `${c.name} (${c.maxPoints}pts)`).join('\n'),
+        structuredCriteria: DPD_STANDARD_INBOUND_CRITERIA
       };
     } else {
       alert("Please select a training scenario.");
@@ -129,17 +165,58 @@ const SetupScreen: React.FC<Props> = ({
       </h1>
       
       <form onSubmit={handleSubmit} className="space-y-8">
-        {/* Agent Name */}
-        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700">
-          <label className="block text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Trainee Identity</label>
-          <input
-            type="text"
-            value={agentName}
-            onChange={(e) => setAgentName(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-4 text-white text-xl font-semibold focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-            placeholder="Agent Name"
-            required
-          />
+        {/* Trainee Info & Core Config */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700">
+            <label className="block text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Trainee Identity</label>
+            <input
+              type="text"
+              value={agentName}
+              onChange={(e) => setAgentName(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-4 text-white text-xl font-semibold focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+              placeholder="Agent Name"
+              required
+            />
+          </div>
+
+          <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 space-y-4">
+             <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase font-bold mb-1 block">Client</label>
+                  <select 
+                    value={client} 
+                    onChange={(e) => setClient(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white"
+                  >
+                    <option value="DPD">DPD</option>
+                    <option value="Iloxx">Iloxx</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase font-bold mb-1 block">Call Type</label>
+                  <select 
+                    value={callType} 
+                    onChange={(e) => setCallType(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white"
+                  >
+                    <option value="Inbound">Inbound</option>
+                    <option value="Outbound">Outbound</option>
+                  </select>
+                </div>
+             </div>
+             <div>
+                <label className="text-[10px] text-slate-500 uppercase font-bold mb-1 block">Project</label>
+                <select 
+                  value={project} 
+                  onChange={(e) => setProject(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white"
+                >
+                  <option value="Standart">Standart</option>
+                  <option value="Kubi">Kubi</option>
+                  <option value="Leadgenerierung Vertieb">Leadgenerierung Vertieb</option>
+                </select>
+             </div>
+          </div>
         </div>
 
         {/* Official Presets */}
@@ -189,8 +266,8 @@ const SetupScreen: React.FC<Props> = ({
                   {workbook ? (
                     <div className="mt-2 text-xs">
                        <select 
-                         value={selectedClient} 
-                         onChange={(e) => { setSelectedPresetId('custom-file'); setSelectedClient(e.target.value); }}
+                         value={selectedClientFile} 
+                         onChange={(e) => { setSelectedPresetId('custom-file'); setSelectedClientFile(e.target.value); }}
                          className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200"
                        >
                          {Array.from(new Set(availableSheets.map(s => s.client))).map(c => <option key={c} value={c}>{c}</option>)}
